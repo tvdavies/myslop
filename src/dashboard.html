@@ -74,8 +74,13 @@
   .secret-reveal { margin: 12px 14px; padding: 12px 14px; border: 1px solid #bfd3f8; border-radius: 6px; background: #eff4fe; }
   .secret-reveal code { word-break: break-all; font-size: 13px; }
   .secret-reveal p { color: var(--dim); font-size: 12.5px; margin-top: 6px; }
-  .navlink { color: var(--dim); text-decoration: none; font-size: 13px; }
-  .navlink:hover { color: var(--text); }
+  .setup-cta { display: flex; justify-content: center; margin-top: 28px; }
+  .btn-link {
+    display: inline-block; text-decoration: none; font-size: 13.5px;
+    color: var(--text); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 7px; padding: 9px 18px;
+  }
+  .btn-link:hover { background: #f3f4f6; border-color: var(--dim); }
   .hero { max-width: 420px; margin: 90px auto; text-align: center; }
   .hero h1 { font-size: 22px; margin-bottom: 10px; font-weight: 600; }
   .hero p { color: var(--dim); margin-bottom: 26px; }
@@ -106,7 +111,6 @@
   <header>
     <div class="logo">files<span class="muted">.myslop.app</span></div>
     <div class="userbox" id="userbox" hidden>
-      <a class="navlink" href="/skill">Set up an agent</a>
       <img id="user-pic" alt="" hidden>
       <span id="user-name"></span>
       <button class="small" id="signout-btn">Sign out</button>
@@ -164,6 +168,10 @@
         <tbody id="tokens-body"></tbody>
       </table>
       <div class="empty" id="tokens-empty" hidden>No tokens yet — generate one above.</div>
+    </div>
+
+    <div class="setup-cta">
+      <a class="btn-link" href="/skill">Set up an agent or new machine →</a>
     </div>
   </div>
 </div>
