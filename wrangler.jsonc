@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "myslop-files",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": false,
+  "routes": [{ "pattern": "files.myslop.app", "custom_domain": true }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "myslop-files" }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "myslop-files",
+      "database_id": "9f1433ac-cac9-47ad-9397-56e33dd2fdf0"
+    }
+  ],
+  "rules": [
+    { "type": "Text", "globs": ["**/*.html", "**/*.md"], "fallthrough": false }
+  ]
+}

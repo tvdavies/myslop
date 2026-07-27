@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>files.myslop.app</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23ebff00'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' font-family='monospace' fill='%230a0a0a'%3Ef%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0d0d0f;
+    --panel: #16161a;
+    --border: #2a2a30;
+    --text: #ececf1;
+    --dim: #8b8b96;
+    --accent: #ebff00;
+    --danger: #ff5d5d;
+    --ok: #6ee7a0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 80px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 40px; }
+  .logo { font-weight: 700; letter-spacing: -0.5px; }
+  .logo span { color: var(--accent); }
+  .userbox { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 12px; }
+  .userbox img { width: 24px; height: 24px; border-radius: 50%; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 2px; color: var(--dim); margin: 40px 0 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  button {
+    font: inherit; cursor: pointer; border: 1px solid var(--border);
+    background: transparent; color: var(--text); border-radius: 6px; padding: 6px 12px;
+  }
+  button:hover { border-color: var(--dim); }
+  button.primary { background: var(--accent); color: #0a0a0a; border-color: var(--accent); font-weight: 700; }
+  button.primary:hover { filter: brightness(1.1); }
+  button.danger { color: var(--danger); }
+  button.danger:hover { border-color: var(--danger); }
+  button.small { padding: 2px 8px; font-size: 12px; }
+  input[type=text] {
+    font: inherit; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 6px 10px;
+  }
+  input[type=text]:focus { outline: none; border-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); font-weight: 400; }
+  td a { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--dim); word-break: break-all; }
+  td a:hover { color: var(--accent); border-color: var(--accent); }
+  .dim { color: var(--dim); font-size: 12px; white-space: nowrap; }
+  .empty { padding: 24px 14px; color: var(--dim); }
+  .pill { font-size: 11px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--border); cursor: pointer; user-select: none; }
+  .pill.private { color: var(--accent); border-color: var(--accent); }
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .toolbar { display: flex; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .secret-reveal {
+    margin: 12px 14px; padding: 12px; border: 1px dashed var(--accent); border-radius: 6px;
+    background: rgba(235, 255, 0, 0.04);
+  }
+  .secret-reveal code { word-break: break-all; color: var(--accent); }
+  .secret-reveal p { color: var(--dim); font-size: 12px; margin-top: 6px; }
+  .setup-strip {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 8px;
+  }
+  .setup-strip code { color: var(--accent); font-size: 13px; word-break: break-all; }
+  .hero { text-align: center; padding: 90px 20px; }
+  .hero h1 { font-size: 28px; margin-bottom: 12px; letter-spacing: -1px; }
+  .hero h1 span { color: var(--accent); }
+  .hero p { color: var(--dim); margin-bottom: 32px; }
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 18px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 10;
+  }
+  #toast.show { opacity: 1; }
+  #toast.error { border-color: var(--danger); color: var(--danger); }
+  .section-note { color: var(--dim); font-size: 12.5px; margin: 0 0 12px; }
+  @media (max-width: 640px) {
+    .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">files.<span>myslop</span>.app</div>
+    <div class="userbox" id="userbox" hidden>
+      <img id="user-pic" alt="" hidden>
+      <span id="user-name"></span>
+      <button class="small" id="signout-btn">sign out</button>
+    </div>
+  </header>
+
+  <div id="view-loading" class="hero"><p>loading…</p></div>
+
+  <div id="view-signin" class="hero" hidden>
+    <h1>your files, <span>your tokens</span></h1>
+    <p>Sign in to manage uploads, mint API tokens, and set up your agent.</p>
+    <button class="primary" id="signin-btn">Sign in with shoo.dev</button>
+  </div>
+
+  <div id="view-app" hidden>
+    <div class="setup-strip">
+      <span class="dim">set up a machine or agent:</span>
+      <code id="setup-cmd">curl -fsS https://files.myslop.app/setup.sh | bash</code>
+      <button class="small" id="setup-copy">copy</button>
+    </div>
+
+    <h2>Tokens</h2>
+    <div class="panel">
+      <div class="toolbar">
+        <input type="text" id="token-name" placeholder="name (e.g. laptop, claude)">
+        <button class="primary" id="token-create">Generate token</button>
+      </div>
+      <div class="secret-reveal" id="secret-reveal" hidden>
+        <code id="secret-value"></code>
+        <p>Shown once — paste it into the setup script on the machine that needs it.
+          <button class="small" id="secret-copy">copy</button></p>
+      </div>
+      <table id="tokens-table" hidden>
+        <thead>
+          <tr><th>name</th><th>token</th><th class="hide-sm">created</th><th class="hide-sm">last used</th><th></th></tr>
+        </thead>
+        <tbody id="tokens-body"></tbody>
+      </table>
+      <div class="empty" id="tokens-empty" hidden>No tokens yet — generate one above.</div>
+    </div>
+
+    <h2>Files</h2>
+    <div class="panel">
+      <table id="files-table" hidden>
+        <thead>
+          <tr><th>file</th><th class="hide-sm">size</th><th class="hide-sm">uploaded</th><th>visibility</th><th></th></tr>
+        </thead>
+        <tbody id="files-body"></tbody>
+      </table>
+      <div class="empty" id="files-empty" hidden>
+        No files yet — anything uploaded with your tokens shows up here.
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+(() => {
+  const SHOO = "https://shoo.dev";
+  const ORIGIN = location.origin;
+  const REDIRECT_URI = ORIGIN + "/dashboard";
+  const $ = (id) => document.getElementById(id);
+
+  // --- tiny helpers ---
+  const toastEl = $("toast");
+  let toastTimer;
+  function toast(msg, isError) {
+    toastEl.textContent = msg;
+    toastEl.className = "show" + (isError ? " error" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toastEl.className = ""), 3000);
+  }
+  function show(view) {
+    for (const v of ["view-loading", "view-signin", "view-app"]) $(v).hidden = v !== view;
+    $("userbox").hidden = view !== "view-app";
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function fmtSize(n) {
+    if (n == null) return "—";
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1048576).toFixed(1) + " MB";
+  }
+  function fmtDate(ts) {
+    return ts ? new Date(ts).toISOString().slice(0, 10) : "—";
+  }
+  async function copyText(text) {
+    await navigator.clipboard.writeText(text);
+    toast("copied");
+  }
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      headers: opts.body ? { "content-type": "application/json" } : {},
+      ...opts,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    if (res.status === 401) { show("view-signin"); throw new Error("unauthorized"); }
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    return res.json();
+  }
+
+  // --- shoo PKCE ---
+  function randStr(len) {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    const rand = crypto.getRandomValues(new Uint8Array(len));
+    let out = "";
+    for (const b of rand) out += chars[b % chars.length];
+    return out;
+  }
+  function b64url(bytes) {
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+  async function signIn() {
+    const verifier = randStr(64);
+    const state = randStr(32);
+    sessionStorage.setItem("shoo_pkce", JSON.stringify({ verifier, state, t: Date.now() }));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+    const u = new URL("/authorize", SHOO);
+    u.searchParams.set("client_id", "origin:" + ORIGIN);
+    u.searchParams.set("redirect_uri", REDIRECT_URI);
+    u.searchParams.set("state", state);
+    u.searchParams.set("code_challenge", b64url(new Uint8Array(digest)));
+    u.searchParams.set("code_challenge_method", "S256");
+    u.searchParams.set("pii", "true");
+    location.assign(u);
+  }
+  async function handleCallback() {
+    const params = new URLSearchParams(location.search);
+    const code = params.get("code");
+    const state = params.get("state");
+    if (!code || !state) return false;
+    history.replaceState({}, "", "/dashboard");
+    let pkce = null;
+    try { pkce = JSON.parse(sessionStorage.getItem("shoo_pkce")); } catch {}
+    sessionStorage.removeItem("shoo_pkce");
+    if (!pkce || pkce.state !== state || Date.now() - pkce.t > 10 * 60 * 1000) {
+      toast("sign-in expired, try again", true);
+      return false;
+    }
+    const res = await fetch(new URL("/token", SHOO), {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: "origin:" + ORIGIN,
+        redirect_uri: REDIRECT_URI,
+        code,
+        code_verifier: pkce.verifier,
+      }),
+    });
+    if (!res.ok) { toast("token exchange failed", true); return false; }
+    const tok = await res.json();
+    const sess = await fetch("/api/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id_token: tok.id_token }),
+    });
+    if (!sess.ok) { toast("session creation failed", true); return false; }
+    return true;
+  }
+
+  // --- files ---
+  async function loadFiles() {
+    const { files } = await api("/api/files");
+    $("files-table").hidden = files.length === 0;
+    $("files-empty").hidden = files.length !== 0;
+    $("files-body").innerHTML = files.map((f) => `
+      <tr data-key="${esc(f.key)}">
+        <td><a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.filename)}</a></td>
+        <td class="dim hide-sm">${fmtSize(f.size)}</td>
+        <td class="dim hide-sm">${fmtDate(f.created_at)}</td>
+        <td><span class="pill ${f.private ? "private" : ""}" data-act="toggle" title="click to toggle">${f.private ? "private" : "public"}</span></td>
+        <td>
+          <div class="row-actions">
+            <button class="small" data-act="copy">copy url</button>
+            <button class="small danger" data-act="delete">delete</button>
+          </div>
+        </td>
+      </tr>`).join("");
+  }
+  $("files-body").addEventListener("click", async (e) => {
+    const act = e.target.dataset?.act;
+    if (!act) return;
+    const tr = e.target.closest("tr");
+    const key = tr.dataset.key;
+    try {
+      if (act === "copy") {
+        await copyText(location.origin + "/" + key);
+      } else if (act === "toggle") {
+        const toPrivate = e.target.textContent === "public";
+        await api("/api/files/" + key, { method: "PATCH", body: { private: toPrivate } });
+        await loadFiles();
+        toast(toPrivate ? "now private" : "now public");
+      } else if (act === "delete") {
+        if (!confirm("Delete " + key + "? The URL will stop working.")) return;
+        await api("/api/files/" + key, { method: "DELETE" });
+        await loadFiles();
+        toast("deleted");
+      }
+    } catch (err) { toast(err.message, true); }
+  });
+
+  // --- tokens ---
+  async function loadTokens() {
+    const { tokens } = await api("/api/tokens");
+    $("tokens-table").hidden = tokens.length === 0;
+    $("tokens-empty").hidden = tokens.length !== 0;
+    $("tokens-body").innerHTML = tokens.map((t) => `
+      <tr data-id="${esc(t.id)}">
+        <td>${esc(t.name)}</td>
+        <td class="dim">${esc(t.prefix)}…</td>
+        <td class="dim hide-sm">${fmtDate(t.created_at)}</td>
+        <td class="dim hide-sm">${fmtDate(t.last_used_at)}</td>
+        <td><div class="row-actions"><button class="small danger" data-act="revoke">revoke</button></div></td>
+      </tr>`).join("");
+  }
+  $("token-create").addEventListener("click", async () => {
+    try {
+      const name = $("token-name").value.trim() || "unnamed";
+      const { token } = await api("/api/tokens", { method: "POST", body: { name } });
+      $("token-name").value = "";
+      $("secret-reveal").hidden = false;
+      $("secret-value").textContent = token.secret;
+      await loadTokens();
+    } catch (err) { toast(err.message, true); }
+  });
+  $("secret-copy").addEventListener("click", () => copyText($("secret-value").textContent));
+  $("tokens-body").addEventListener("click", async (e) => {
+    if (e.target.dataset?.act !== "revoke") return;
+    const tr = e.target.closest("tr");
+    if (!confirm("Revoke this token? Anything using it will stop working immediately.")) return;
+    try {
+      await api("/api/tokens/" + tr.dataset.id, { method: "DELETE" });
+      await loadTokens();
+      toast("revoked");
+    } catch (err) { toast(err.message, true); }
+  });
+
+  // --- setup strip ---
+  $("setup-copy").addEventListener("click", () => copyText($("setup-cmd").textContent));
+
+  // --- session ---
+  $("signin-btn").addEventListener("click", signIn);
+  $("signout-btn").addEventListener("click", async () => {
+    await fetch("/api/session", { method: "DELETE" });
+    location.reload();
+  });
+
+  async function boot() {
+    try {
+      await handleCallback();
+    } catch (err) {
+      toast("sign-in failed: " + err.message, true);
+    }
+    try {
+      const { user } = await api("/api/me");
+      $("user-name").textContent = user.name || user.email || user.id.slice(0, 12);
+      if (user.picture) { $("user-pic").src = user.picture; $("user-pic").hidden = false; }
+      show("view-app");
+      await Promise.all([loadFiles(), loadTokens()]);
+    } catch {
+      // api() already switched to the sign-in view on 401
+    }
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

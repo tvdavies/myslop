@@ -1,0 +1,4 @@
+.dev.vars
+node_modules/
+.wrangler/
+src/setup-sh.generated.ts
