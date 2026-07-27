@@ -597,6 +597,25 @@ export default {
       if (!headers.get("content-type")) {
         headers.set("content-type", guessType(key));
       }
+      headers.set("x-content-type-options", "nosniff");
+      // User content is served from the same origin as the authenticated
+      // dashboard, so scriptable documents (HTML/SVG/XML) must run in an
+      // opaque origin: CSP sandbox WITHOUT allow-same-origin. Scripts still
+      // work, but the document gets no cookies and cannot call /api/*.
+      const ct = (headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+      const scriptable = [
+        "text/html",
+        "application/xhtml+xml",
+        "image/svg+xml",
+        "application/xml",
+        "text/xml",
+      ];
+      if (scriptable.includes(ct)) {
+        headers.set(
+          "content-security-policy",
+          "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads",
+        );
+      }
       return new Response(req.method === "HEAD" ? null : obj.body, { headers });
     }
 
