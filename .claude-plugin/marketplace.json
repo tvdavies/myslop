@@ -1,0 +1,13 @@
+{
+  "name": "myslop-mail",
+  "description": "Skills for mail.myslop.app — disposable @myslop.app inboxes for verification links and OTP codes.",
+  "owner": { "name": "Tom Davies" },
+  "plugins": [
+    {
+      "name": "temp-email",
+      "source": "./plugins/temp-email",
+      "description": "Create a temporary @myslop.app email address and wait for verification links or OTP codes.",
+      "tags": ["email", "otp", "verification", "testing"]
+    }
+  ]
+}
