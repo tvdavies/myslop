@@ -74,12 +74,8 @@
   .secret-reveal { margin: 12px 14px; padding: 12px 14px; border: 1px solid #bfd3f8; border-radius: 6px; background: #eff4fe; }
   .secret-reveal code { word-break: break-all; font-size: 13px; }
   .secret-reveal p { color: var(--dim); font-size: 12.5px; margin-top: 6px; }
-  .setup-strip {
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-    padding: 10px 14px; margin-bottom: 4px; font-size: 13px;
-  }
-  .setup-strip code { font-size: 12.5px; word-break: break-all; }
+  .navlink { color: var(--dim); text-decoration: none; font-size: 13px; }
+  .navlink:hover { color: var(--text); }
   .hero { max-width: 420px; margin: 90px auto; text-align: center; }
   .hero h1 { font-size: 22px; margin-bottom: 10px; font-weight: 600; }
   .hero p { color: var(--dim); margin-bottom: 26px; }
@@ -110,6 +106,7 @@
   <header>
     <div class="logo">files<span class="muted">.myslop.app</span></div>
     <div class="userbox" id="userbox" hidden>
+      <a class="navlink" href="/skill">Set up an agent</a>
       <img id="user-pic" alt="" hidden>
       <span id="user-name"></span>
       <button class="small" id="signout-btn">Sign out</button>
@@ -136,12 +133,6 @@
   </div>
 
   <div id="view-app" hidden>
-    <div class="setup-strip">
-      <span class="dim">Set up a machine or agent:</span>
-      <code id="setup-cmd">curl -fsS https://files.myslop.app/setup.sh | bash</code>
-      <button class="small" id="setup-strip-copy">Copy</button>
-    </div>
-
     <h2>Files</h2>
     <div class="panel">
       <table id="files-table" hidden>
@@ -421,7 +412,6 @@
   $("setup-copy").addEventListener("click", () => copyText($("setup-secret").textContent));
 
   // --- misc wiring ---
-  $("setup-strip-copy").addEventListener("click", () => copyText($("setup-cmd").textContent));
   $("signin-btn").addEventListener("click", () => {
     const name = new URLSearchParams(location.search).get("name");
     if (name) sessionStorage.setItem("setup_name", name);
