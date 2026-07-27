@@ -460,7 +460,9 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    if (url.pathname === "/dashboard" || url.pathname === "/dashboard/") {
+    // /setup is the same SPA in token-setup mode: it signs the user in and
+    // auto-mints a token named from ?name=, shown on a clean copy page.
+    if (url.pathname === "/dashboard" || url.pathname === "/dashboard/" || url.pathname === "/setup") {
       return new Response(dashboardHtml, {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
