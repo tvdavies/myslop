@@ -1,5 +1,6 @@
 import dashboardHtml from "./dashboard.html";
 import skillMd from "./skill.md";
+import skillHtmlTemplate from "./skill.html";
 import setupShB64 from "./setup-sh.generated";
 
 // Decoded lazily-once; stored base64 because raw shell text in the bundle
@@ -474,9 +475,18 @@ export default {
       });
     }
 
-    if (url.pathname === "/skill.md" || url.pathname === "/skill") {
+    // Raw markdown: what agents fetch and install.
+    if (url.pathname === "/skill.md") {
       return new Response(skillMd, {
         headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "public, max-age=300" },
+      });
+    }
+
+    // Human-readable page rendering the same skill verbatim, plus install steps.
+    if (url.pathname === "/skill") {
+      const escaped = skillMd.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
+      return new Response(skillHtmlTemplate.replace("__SKILL_MD__", escaped), {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" },
       });
     }
 

@@ -27,7 +27,20 @@ curl -sS --fail-with-body -X PUT -T ./screenshot.png \
 
 ## Agent setup
 
-Run `curl -fsS https://files.myslop.app/setup.sh | bash` on any machine to configure `MYSLOP_FILES_TOKEN`, then point agents at `https://files.myslop.app/skill.md`. The local `file-upload` skill (`~/.claude/skills/file-upload/SKILL.md`) uses the same variable.
+Run `curl -fsS https://files.myslop.app/setup.sh | bash` on any machine to configure `MYSLOP_FILES_TOKEN`.
+
+The `file-upload` agent skill is served three ways:
+
+- `GET /skill` — human-readable page rendering the skill verbatim plus install options.
+- `GET /skill.md` — raw markdown agents fetch and install.
+- **Claude Code plugin** — this repo is also a plugin marketplace:
+
+  ```
+  /plugin marketplace add tvdavies/myslop-files
+  /plugin install file-upload@myslop-files
+  ```
+
+The plugin lives at `plugins/file-upload/` (`.claude-plugin/plugin.json` + `skills/file-upload/SKILL.md`); the marketplace manifest is `.claude-plugin/marketplace.json`. The skill file is mirrored from `src/skill.md` by `scripts/gen-setup.ts` on every build, so the served copy and the plugin copy never drift — **edit `src/skill.md`, not the plugin copy.** Validate both manifests with `claude plugin validate --strict .claude-plugin/marketplace.json` and `... plugins/file-upload`.
 
 ## Deploy
 

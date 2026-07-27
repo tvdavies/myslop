@@ -1,0 +1,10 @@
+{
+  "name": "file-upload",
+  "description": "Upload a local file (screenshot, recording, log, HTML artifact) to files.myslop.app and return a permanent public URL.",
+  "version": "0.1.0",
+  "author": { "name": "Tom Davies" },
+  "homepage": "https://files.myslop.app/skill",
+  "repository": "https://github.com/tvdavies/myslop-files",
+  "license": "MIT",
+  "keywords": ["files", "upload", "sharing", "curl"]
+}
