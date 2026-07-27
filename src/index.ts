@@ -533,7 +533,8 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
     return json({ claims });
   }
 
-  // DELETE /claim/<name> — release a name you own.
+  // DELETE /claim/<name> — release a name you own AND purge its stored mail,
+  // matching the dashboard's release. Giving up the name wipes the mailbox.
   if (parts[0] === "claim" && parts[1] && req.method === "DELETE") {
     const name = parts[1].toLowerCase();
     if (!validInbox(name)) return json({ error: "invalid name" }, 400);
@@ -541,7 +542,9 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
       .bind(name, uid)
       .run();
     if (!res.meta.changes) return json({ error: "not found", name }, 404);
-    return json({ released: name });
+    const listed = await env.MAIL.list({ prefix: `inbox/${name}/` });
+    await Promise.all(listed.objects.map((o) => env.MAIL.delete(o.key)));
+    return json({ released: name, deleted: listed.objects.length });
   }
 
   // Inbox access. Ownership is auto-established on first touch.

@@ -14,7 +14,7 @@ Mint tokens in the dashboard. Every request needs `Authorization: Bearer <msm_to
 
 - `POST /claim` `{name?, note?}` — reserve a name (generated `adjective-noun` if omitted). `201` granted, `200` if you already own it, `409` if another account owns it.
 - `GET /claims` — your owned names.
-- `DELETE /claim/<name>` — release a name you own.
+- `DELETE /claim/<name>` — release a name you own and delete its stored mail.
 - `GET /inbox/<name>?wait=<0-50>` — list messages, long-polling until one arrives. Auto-owns the name on first read.
 - `GET /inbox/<name>/<id>` — full message (`from`, `subject`, `text`, `html`, `links`).
 - `DELETE /inbox/<name>` — purge stored mail (keeps the ownership row).

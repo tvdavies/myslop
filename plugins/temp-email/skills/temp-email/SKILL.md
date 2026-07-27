@@ -63,7 +63,7 @@ Response includes `address` (e.g. `big-donkey@myslop.app`) — use that in the
 sign-up form.
 
 - List your claims: `GET https://mail.myslop.app/claims`
-- Release one: `DELETE https://mail.myslop.app/claim/<name>`
+- Release one: `DELETE https://mail.myslop.app/claim/<name>` (also deletes its stored mail)
 
 ## Wait for a message
 
@@ -91,5 +91,7 @@ verification/magic link. For OTP codes, grep the `text` field.
 
 ## Clean up (optional)
 
-Purge stored mail for an inbox: `DELETE https://mail.myslop.app/inbox/<local-part>`.
+- Purge an inbox's mail but keep the name: `DELETE https://mail.myslop.app/inbox/<local-part>`.
+- Release the name and delete its mail: `DELETE https://mail.myslop.app/claim/<local-part>`.
+
 Manage addresses and tokens any time at https://mail.myslop.app/dashboard.
