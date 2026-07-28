@@ -69,6 +69,9 @@
   .inbox-head .back:hover { color: var(--text); }
   .inbox-head .addr-name { font-weight: 600; font-size: 16px; }
   .inbox-head .spacer { flex: 1; }
+  .live { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #15803d; }
+  .live .dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
   .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 20; padding: 24px; }
   .overlay.show { display: flex; }
   .modal { background: var(--panel); border-radius: 10px; max-width: 680px; width: 100%; max-height: 85vh; overflow: auto; }
@@ -126,7 +129,7 @@
       </div>
       <table id="addr-table" hidden>
         <thead>
-          <tr><th>Address</th><th class="hide-sm">Note</th><th>Mail</th><th class="hide-sm">Latest</th><th></th></tr>
+          <tr><th>Address</th><th class="hide-sm">Note</th><th>Status</th><th>Mail</th><th></th></tr>
         </thead>
         <tbody id="addr-body"></tbody>
       </table>
@@ -164,8 +167,8 @@
     <div class="inbox-head">
       <a href="#" class="back" id="inbox-back">← Addresses</a>
       <span class="addr-name mono" id="inbox-addr"></span>
+      <span class="live" id="inbox-live" hidden><span class="dot"></span>live</span>
       <span class="spacer"></span>
-      <button class="small" id="inbox-refresh">Refresh</button>
     </div>
     <div class="panel">
       <table id="msg-table" hidden>
@@ -174,7 +177,7 @@
         </thead>
         <tbody id="msg-body"></tbody>
       </table>
-      <div class="empty" id="msg-empty" hidden>No messages yet. Mail sent to this address will appear here.</div>
+      <div class="empty" id="msg-empty">Waiting for mail — new messages appear here instantly.</div>
     </div>
   </div>
 </div>
@@ -313,14 +316,24 @@
     $("addr-body").innerHTML = addresses.map((a) => `
       <tr data-name="${esc(a.name)}">
         <td><div class="addr">${ICON_MAIL}<span class="link" data-act="open">${esc(a.address)}</span></div></td>
-        <td class="dim hide-sm">${a.note ? esc(a.note) : "—"} ${a.claimed ? '<span class="pill claimed">claimed</span>' : ""}</td>
+        <td class="dim hide-sm">${a.note ? esc(a.note) : "—"}</td>
+        <td>${statusPill(a)}</td>
         <td><span class="count ${a.count ? "has" : ""}">${a.count}</span></td>
-        <td class="dim hide-sm">${fmtDate(a.latest)}</td>
         <td><div class="row-actions">
+          ${a.claimed ? "" : `<button class="small" data-act="keep" title="Make permanent">Keep</button>`}
           <button class="iconbtn" data-act="copy" title="Copy address">${ICON_COPY}</button>
           <button class="iconbtn danger" data-act="release" title="Release + delete mail">${ICON_TRASH}</button>
         </div></td>
       </tr>`).join("");
+  }
+  function statusPill(a) {
+    if (a.claimed) return '<span class="pill claimed">permanent</span>';
+    if (!a.leaseExpiresAt) return '<span class="pill">leased</span>';
+    const ms = a.leaseExpiresAt - Date.now();
+    if (ms <= 0) return '<span class="pill">expiring…</span>';
+    const h = Math.round(ms / 3600000);
+    const label = h < 48 ? h + "h" : Math.round(h / 24) + "d";
+    return `<span class="pill" title="Leased — auto-releases when idle">expires in ${label}</span>`;
   }
   $("addr-body").addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-act]");
@@ -330,6 +343,11 @@
     try {
       if (btn.dataset.act === "open") openInbox(name);
       else if (btn.dataset.act === "copy") await copyText(name + "@myslop.app");
+      else if (btn.dataset.act === "keep") {
+        await api("/api/addresses", { method: "POST", body: { name } });
+        await loadAddresses();
+        toast("Now permanent");
+      }
       else if (btn.dataset.act === "release") {
         if (!confirm(`Release ${name}@myslop.app?\n\nStored mail is deleted and the name becomes free for others to claim.`)) return;
         await api("/api/addresses/" + encodeURIComponent(name), { method: "DELETE" });
@@ -352,42 +370,61 @@
     } catch (err) { toast(err.message, true); }
   });
 
-  // --- inbox / messages ---
+  // --- inbox / messages (live over SSE) ---
   let currentInbox = null;
-  async function openInbox(name) {
-    currentInbox = name;
-    $("inbox-addr").textContent = name + "@myslop.app";
-    show("view-inbox");
-    await loadMessages();
+  let inboxStream = null;
+  let msgStore = new Map(); // id -> full message record (from the stream)
+  function closeStream() {
+    if (inboxStream) { inboxStream.close(); inboxStream = null; }
+    $("inbox-live").hidden = true;
   }
-  async function loadMessages() {
-    if (!currentInbox) return;
-    const { messages } = await api("/api/addresses/" + encodeURIComponent(currentInbox));
-    $("msg-table").hidden = messages.length === 0;
-    $("msg-empty").hidden = messages.length !== 0;
-    $("msg-body").innerHTML = messages.map((m) => `
+  function openInbox(name) {
+    closeStream();
+    currentInbox = name;
+    msgStore = new Map();
+    $("inbox-addr").textContent = name + "@myslop.app";
+    renderMessages();
+    show("view-inbox");
+    // EventSource carries the session cookie automatically (same origin).
+    const es = new EventSource("/api/addresses/" + encodeURIComponent(name) + "/stream");
+    inboxStream = es;
+    es.addEventListener("open", () => { $("inbox-live").hidden = false; });
+    es.addEventListener("message", (ev) => {
+      try {
+        const m = JSON.parse(ev.data);
+        if (m && m.id) { msgStore.set(m.id, m); renderMessages(); }
+      } catch {}
+    });
+    es.addEventListener("error", () => {
+      // EventSource auto-reconnects; just reflect the transient state.
+      if (es.readyState !== EventSource.OPEN) $("inbox-live").hidden = true;
+    });
+  }
+  function renderMessages() {
+    const msgs = [...msgStore.values()].sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+    $("msg-table").hidden = msgs.length === 0;
+    $("msg-empty").hidden = msgs.length !== 0;
+    $("msg-body").innerHTML = msgs.map((m) => `
       <tr class="rowclick" data-id="${esc(m.id)}">
-        <td class="dim">${esc(m.from || "—")}</td>
+        <td class="dim">${esc(m.fromName || m.from || "—")}</td>
         <td>${esc(m.subject || "(no subject)")}</td>
         <td class="dim hide-sm">${fmtDate(m.receivedAt)}</td>
       </tr>`).join("");
   }
-  $("msg-body").addEventListener("click", async (e) => {
+  $("msg-body").addEventListener("click", (e) => {
     const tr = e.target.closest("tr[data-id]");
     if (!tr) return;
-    try {
-      const m = await api("/api/message/" + encodeURIComponent(currentInbox) + "/" + encodeURIComponent(tr.dataset.id));
-      $("modal-subject").textContent = m.subject || "(no subject)";
-      $("modal-meta").textContent = `${m.fromName ? m.fromName + " " : ""}<${m.from}> · ${fmtDate(m.receivedAt)}`;
-      $("modal-links").innerHTML = (m.links || []).length
-        ? "<strong>Links</strong>" + m.links.map((l) => `<a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a>`).join("")
-        : "";
-      $("modal-text").textContent = m.text || "(no text body)";
-      $("msg-overlay").classList.add("show");
-    } catch (err) { toast(err.message, true); }
+    const m = msgStore.get(tr.dataset.id);
+    if (!m) return;
+    $("modal-subject").textContent = m.subject || "(no subject)";
+    $("modal-meta").textContent = `${m.fromName ? m.fromName + " " : ""}<${m.from}> · ${fmtDate(m.receivedAt)}`;
+    $("modal-links").innerHTML = (m.links || []).length
+      ? "<strong>Links</strong>" + m.links.map((l) => `<a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a>`).join("")
+      : "";
+    $("modal-text").textContent = m.text || "(no text body)";
+    $("msg-overlay").classList.add("show");
   });
-  $("inbox-back").addEventListener("click", async (e) => { e.preventDefault(); currentInbox = null; show("view-app"); await loadAddresses(); });
-  $("inbox-refresh").addEventListener("click", () => loadMessages().catch((err) => toast(err.message, true)));
+  $("inbox-back").addEventListener("click", async (e) => { e.preventDefault(); closeStream(); currentInbox = null; show("view-app"); await loadAddresses(); });
   $("modal-close").addEventListener("click", () => $("msg-overlay").classList.remove("show"));
   $("msg-overlay").addEventListener("click", (e) => { if (e.target === $("msg-overlay")) $("msg-overlay").classList.remove("show"); });
 

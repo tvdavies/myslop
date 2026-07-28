@@ -36,11 +36,18 @@ TOKEN="${MYSLOP_MAIL_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/myslop-mail
 ## Choosing an address
 
 - **Need to log back into the same account later?** Claim a stable, memorable
-  name (below) and reuse it. The account on the target service is keyed to the
-  email, so the same address = the same account.
+  name (below) and reuse it. Claiming makes it **permanent** — kept until you
+  release it. The account on the target service is keyed to the email, so the
+  same address = the same account.
 - **One-off / throwaway?** Just pick any local part, e.g.
   `tmp-$(openssl rand -hex 4)@myslop.app`, and start reading it — no claim
-  needed. Your account owns it automatically on first read.
+  needed. Your account **leases** it automatically on first read: the lease is
+  ~1 day, slides forward every time you read it or mail arrives, and once it
+  lapses the address auto-releases and its mail is deleted. So throwaways clean
+  themselves up — you never have to release them manually.
+
+Request a longer lease with `?lease=<hours>` (up to 168 / 7 days) on any read or
+stream, e.g. `.../inbox/<name>?lease=72`.
 
 ## Claim a memorable address
 
@@ -67,8 +74,23 @@ sign-up form.
 
 ## Wait for a message
 
-List the inbox (local part only, no `@domain`). `wait` long-polls up to 50s,
-returning as soon as a message arrives:
+**Preferred — stream (push):** open an SSE stream and mail is pushed the instant
+it lands. `curl -N` blocks and prints one `data:` line per message (each is the
+**full** message, including `text` and `links` — no second request needed). On
+connect it first replays any mail already in the inbox, then streams new
+arrivals. Connect *before* triggering the sign-up email so nothing is missed.
+
+```sh
+curl -N -H "Authorization: Bearer $TOKEN" \
+  "https://mail.myslop.app/inbox/<local-part>/stream"
+# each event: `data: {"id","from","subject","text","html","links",...}`
+```
+
+Read until you see the message you want (match on `subject`/`from`), grab its
+link or OTP, then disconnect. Reconnect if the stream drops.
+
+**Fallback — long-poll:** for clients that can't stream, list the inbox with
+`wait` (long-polls up to 50s, returns as soon as a message arrives):
 
 ```sh
 curl -sS --fail-with-body -H "Authorization: Bearer $TOKEN" \

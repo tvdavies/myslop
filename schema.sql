@@ -37,8 +37,13 @@ CREATE TABLE IF NOT EXISTS inboxes (
   name TEXT PRIMARY KEY,            -- local part, lowercased
   user_id TEXT NOT NULL REFERENCES users(id),
   note TEXT NOT NULL DEFAULT '',
-  claimed INTEGER NOT NULL DEFAULT 0,  -- 1 = explicit claim (kept), 0 = auto-owned on read
+  claimed INTEGER NOT NULL DEFAULT 0,  -- 1 = explicit claim (permanent), 0 = auto-owned (leased)
   created_at INTEGER NOT NULL,
-  last_read_at INTEGER
+  last_read_at INTEGER,
+  -- NULL for permanent (claimed) inboxes; a future timestamp for leased ones.
+  -- Auto-owned inboxes expire when the lease lapses (swept by the nightly cron),
+  -- so throwaway addresses clean themselves up without a manual release.
+  lease_expires_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS inboxes_user ON inboxes(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS inboxes_lease ON inboxes(lease_expires_at);

@@ -14,6 +14,7 @@ const setupSh = new TextDecoder().decode(
 interface Env {
   MAIL: R2Bucket;
   DB: D1Database;
+  INBOX_HUB: DurableObjectNamespace;
 }
 
 const SHOO_ISSUER = "https://shoo.dev";
@@ -23,6 +24,15 @@ const SESSION_COOKIE = "sid";
 const TOKEN_PREFIX = "msm_";
 const RETENTION_DAYS = 7;
 const MAX_RAW_SIZE = 5 * 1024 * 1024;
+// Leases: auto-owned (throwaway) inboxes expire after this window of inactivity
+// unless extended by activity; explicit claims are permanent (no lease).
+const DEFAULT_LEASE_H = 24;
+const MAX_LEASE_H = 7 * 24; // matches mail retention
+
+function leaseMsFrom(hours: number | undefined): number {
+  const h = Math.min(Math.max(hours ?? DEFAULT_LEASE_H, 1), MAX_LEASE_H);
+  return h * 60 * 60 * 1000;
+}
 // Addresses always live at @myslop.app (where MX points); the API is served
 // from mail.myslop.app but that never appears in an address.
 const MAIL_DOMAIN = "myslop.app";
@@ -218,14 +228,18 @@ type OwnResult =
   | { ok: true; created: boolean }
   | { ok: false; status: 403 | 409 };
 
-// Establish or check ownership of a name for a user. `explicit` marks an
-// intentional claim (kept indefinitely); otherwise it is an auto-own on read.
+// Establish or check ownership of a name for a user.
+//   explicit: an intentional claim → permanent (lease cleared).
+//   otherwise: an auto-own on read/stream → leased (sliding expiry). The lease
+//   extends on every access so an actively-used throwaway stays alive; once it
+//   lapses the nightly sweep releases it.
 async function ownInbox(
   env: Env,
   name: string,
   userId: string,
-  opts: { explicit?: boolean; note?: string } = {},
+  opts: { explicit?: boolean; note?: string; leaseHours?: number } = {},
 ): Promise<OwnResult> {
+  const now = Date.now();
   const existing = await env.DB.prepare(
     "SELECT user_id, claimed FROM inboxes WHERE name = ?",
   )
@@ -235,21 +249,55 @@ async function ownInbox(
   if (existing) {
     if (existing.user_id !== userId) return { ok: false, status: opts.explicit ? 409 : 403 };
     if (opts.explicit) {
+      // Promote to permanent.
       await env.DB.prepare(
-        "UPDATE inboxes SET claimed = 1, note = COALESCE(NULLIF(?, ''), note) WHERE name = ?",
+        "UPDATE inboxes SET claimed = 1, lease_expires_at = NULL, note = COALESCE(NULLIF(?, ''), note) WHERE name = ?",
       )
         .bind(opts.note ?? "", name)
         .run();
+    } else if (existing.claimed === 0) {
+      // Slide the lease forward (never shorten a longer existing window).
+      const lease = now + leaseMsFrom(opts.leaseHours);
+      await env.DB.prepare(
+        "UPDATE inboxes SET last_read_at = ?, lease_expires_at = MAX(COALESCE(lease_expires_at, 0), ?) WHERE name = ?",
+      )
+        .bind(now, lease, name)
+        .run();
+    } else {
+      await env.DB.prepare("UPDATE inboxes SET last_read_at = ? WHERE name = ?").bind(now, name).run();
     }
     return { ok: true, created: false };
   }
 
+  const lease = opts.explicit ? null : now + leaseMsFrom(opts.leaseHours);
   await env.DB.prepare(
-    "INSERT INTO inboxes (name, user_id, note, claimed, created_at) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO inboxes (name, user_id, note, claimed, created_at, last_read_at, lease_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
   )
-    .bind(name, userId, opts.note ?? "", opts.explicit ? 1 : 0, Date.now())
+    .bind(name, userId, opts.note ?? "", opts.explicit ? 1 : 0, now, now, lease)
     .run();
   return { ok: true, created: true };
+}
+
+// Notify an inbox's Durable Object of a new message so it fans out to any
+// connected SSE clients (web + agents).
+async function notifyHub(env: Env, inbox: string, record: unknown): Promise<void> {
+  const stub = env.INBOX_HUB.get(env.INBOX_HUB.idFromName(inbox));
+  await stub.fetch("https://hub/push", {
+    method: "POST",
+    body: JSON.stringify(record),
+    headers: { "content-type": "application/json" },
+  });
+}
+
+// Open an SSE stream for an inbox by forwarding to its Durable Object, which
+// replays the R2 snapshot then streams live messages. Auth/ownership is checked
+// by the caller before this runs.
+function hubSubscribe(env: Env, inbox: string, req: Request): Promise<Response> {
+  const stub = env.INBOX_HUB.get(env.INBOX_HUB.idFromName(inbox));
+  return stub.fetch(`https://hub/subscribe?name=${encodeURIComponent(inbox)}`, {
+    headers: { accept: "text/event-stream" },
+    signal: req.signal,
+  });
 }
 
 // --- Mail storage helpers (R2) ---
@@ -387,29 +435,38 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
 
   // GET /api/addresses — the user's owned inbox names, with message counts.
   if (path === "/api/addresses" && req.method === "GET") {
+    type Row = { name: string; note: string; claimed: number; created_at: number; lease_expires_at: number | null };
     const { results } = await env.DB.prepare(
-      `SELECT name, note, claimed, created_at, last_read_at FROM inboxes
+      `SELECT name, note, claimed, created_at, lease_expires_at FROM inboxes
        WHERE user_id = ? ORDER BY created_at DESC LIMIT 500`,
     )
       .bind(user.id)
-      .all<{ name: string; note: string; claimed: number; created_at: number; last_read_at: number | null }>();
+      .all<Row>();
     const addresses = await Promise.all(
-      (results as { name: string; note: string; claimed: number; created_at: number; last_read_at: number | null }[]).map(
-        async (r) => {
-          const msgs = await listInbox(env, r.name);
-          return {
-            name: r.name,
-            address: `${r.name}@${MAIL_DOMAIN}`,
-            note: r.note,
-            claimed: Boolean(r.claimed),
-            created_at: r.created_at,
-            count: msgs.length,
-            latest: msgs[0]?.receivedAt ?? null,
-          };
-        },
-      ),
+      (results as Row[]).map(async (r) => {
+        const msgs = await listInbox(env, r.name);
+        return {
+          name: r.name,
+          address: `${r.name}@${MAIL_DOMAIN}`,
+          note: r.note,
+          claimed: Boolean(r.claimed),
+          leaseExpiresAt: r.lease_expires_at,
+          created_at: r.created_at,
+          count: msgs.length,
+          latest: msgs[0]?.receivedAt ?? null,
+        };
+      }),
     );
     return json({ addresses });
+  }
+
+  // GET /api/addresses/<name>/stream — SSE for the dashboard (session-authed).
+  if (path.startsWith("/api/addresses/") && path.endsWith("/stream") && req.method === "GET") {
+    const name = decodeURIComponent(path.slice("/api/addresses/".length, -"/stream".length)).toLowerCase();
+    if (!validInbox(name)) return json({ error: "invalid name" }, 400);
+    const own = await ownInbox(env, name, user.id);
+    if (!own.ok) return json({ error: "not found" }, 404);
+    return hubSubscribe(env, name, req);
   }
 
   // POST /api/addresses {name?, note?} — claim a name from the dashboard.
@@ -519,15 +576,18 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
   // GET /claims — this user's owned names.
   if (parts[0] === "claims" && !parts[1] && req.method === "GET") {
     const { results } = await env.DB.prepare(
-      `SELECT name, note, claimed, created_at FROM inboxes WHERE user_id = ? ORDER BY created_at DESC`,
+      `SELECT name, note, claimed, created_at, lease_expires_at FROM inboxes WHERE user_id = ? ORDER BY created_at DESC`,
     )
       .bind(uid)
       .all();
-    const claims = (results as { name: string; note: string; claimed: number; created_at: number }[]).map((r) => ({
+    const claims = (
+      results as { name: string; note: string; claimed: number; created_at: number; lease_expires_at: number | null }[]
+    ).map((r) => ({
       name: r.name,
       address: `${r.name}@${MAIL_DOMAIN}`,
       note: r.note,
-      claimed: Boolean(r.claimed),
+      permanent: Boolean(r.claimed),
+      leaseExpiresAt: r.lease_expires_at ? new Date(r.lease_expires_at).toISOString() : null,
       claimedAt: new Date(r.created_at).toISOString(),
     }));
     return json({ claims });
@@ -552,11 +612,14 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
     return json({ error: "not found" }, 404);
   }
   const inbox = parts[1];
-  const own = await ownInbox(env, inbox, uid);
+  const leaseHours = Number(url.searchParams.get("lease")) || undefined;
+  const own = await ownInbox(env, inbox, uid, { leaseHours });
   if (!own.ok) return json({ error: "inbox owned by another account", inbox }, own.status);
-  ctx.waitUntil(
-    env.DB.prepare("UPDATE inboxes SET last_read_at = ? WHERE name = ?").bind(Date.now(), inbox).run(),
-  );
+
+  // GET /inbox/<name>/stream — Server-Sent Events: R2 snapshot then live push.
+  if (req.method === "GET" && parts[2] === "stream") {
+    return hubSubscribe(env, inbox, req);
+  }
 
   // GET /inbox/<name>/<id> — full message
   if (req.method === "GET" && parts[2]) {
@@ -590,7 +653,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
 export default {
   // Catch-all delivery for *@myslop.app lands here. Delivery is global and is
   // NOT gated by ownership — anyone can receive; ownership gates who can read.
-  async email(message, env, _ctx) {
+  async email(message, env, ctx) {
     const inbox = message.to.toLowerCase().split("@")[0] ?? "";
     if (!validInbox(inbox) || message.rawSize > MAX_RAW_SIZE) {
       message.setReject("mailbox unavailable");
@@ -618,6 +681,17 @@ export default {
         receivedAt,
       },
     });
+    // Keep an actively-receiving leased inbox alive, and push to live listeners.
+    ctx.waitUntil(
+      (async () => {
+        await env.DB.prepare(
+          "UPDATE inboxes SET lease_expires_at = MAX(COALESCE(lease_expires_at, 0), ?) WHERE name = ? AND claimed = 0",
+        )
+          .bind(Date.now() + DEFAULT_LEASE_H * 60 * 60 * 1000, inbox)
+          .run();
+        await notifyHub(env, inbox, record);
+      })(),
+    );
   },
 
   async fetch(req, env, ctx) {
@@ -656,9 +730,25 @@ export default {
     return handleAgentApi(req, env, url, ctx);
   },
 
-  // Nightly retention sweep — only touches inbox mail, never ownership rows.
+  // Nightly sweep: (1) release expired leases (delete row + purge their mail),
+  // then (2) delete any stored mail older than the retention window as a backstop.
   async scheduled(_event, env) {
-    const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    // (1) Expired leases → release the name and purge its mailbox.
+    const { results: expired } = await env.DB.prepare(
+      "SELECT name FROM inboxes WHERE lease_expires_at IS NOT NULL AND lease_expires_at < ?",
+    )
+      .bind(now)
+      .all<{ name: string }>();
+    for (const { name } of expired as { name: string }[]) {
+      const listed = await env.MAIL.list({ prefix: `inbox/${name}/` });
+      await Promise.all(listed.objects.map((o) => env.MAIL.delete(o.key)));
+      await env.DB.prepare("DELETE FROM inboxes WHERE name = ?").bind(name).run();
+    }
+
+    // (2) Retention backstop for any orphaned/old mail.
+    const cutoff = now - RETENTION_DAYS * 24 * 60 * 60 * 1000;
     let cursor: string | undefined;
     do {
       const listed = await env.MAIL.list({ prefix: "inbox/", cursor });
@@ -668,3 +758,121 @@ export default {
     } while (cursor);
   },
 } satisfies ExportedHandler<Env>;
+
+// --- InboxHub Durable Object: per-inbox real-time fan-out over SSE ---
+//
+// One instance per inbox name. On subscribe it replays the R2 snapshot then
+// holds the connection open; email() calls /push and it fans the message out to
+// every connected client. Purely a relay — mail lives in R2, nothing persisted
+// here. Writes to each client are serialized through a promise chain and
+// deduped by message id so snapshot + live pushes never interleave or double up.
+
+interface HubClient {
+  sentIds: Set<string>;
+  closed: boolean;
+  chain: Promise<void>;
+  write: (s: string) => void;
+}
+
+export class InboxHub {
+  private env: Env;
+  private clients = new Set<HubClient>();
+
+  constructor(_state: DurableObjectState, env: Env) {
+    this.env = env;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/push") {
+      const record = (await request.json()) as { id?: string };
+      this.broadcast(record);
+      return new Response("ok");
+    }
+
+    if (url.pathname === "/subscribe") {
+      return this.subscribe(request, url.searchParams.get("name") ?? "");
+    }
+
+    return new Response("not found", { status: 404 });
+  }
+
+  private makeClient(writer: WritableStreamDefaultWriter<Uint8Array>): HubClient {
+    const encoder = new TextEncoder();
+    const client: HubClient = {
+      sentIds: new Set(),
+      closed: false,
+      chain: Promise.resolve(),
+      write(s: string) {
+        this.chain = this.chain
+          .then(() => (this.closed ? undefined : writer.write(encoder.encode(s))))
+          .catch(() => {
+            this.closed = true;
+          });
+      },
+    };
+    return client;
+  }
+
+  private async subscribe(request: Request, name: string): Promise<Response> {
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const client = this.makeClient(writer);
+    this.clients.add(client);
+    client.write(": connected\n\n");
+
+    // Snapshot: replay stored mail oldest→newest (id timestamp-prefix sorts).
+    try {
+      const listed = await this.env.MAIL.list({ prefix: `inbox/${name}/` });
+      for (const key of listed.objects.map((o) => o.key).sort()) {
+        const obj = await this.env.MAIL.get(key);
+        if (!obj) continue;
+        const text = await obj.text();
+        let id = key.split("/").pop()!.replace(/\.json$/, "");
+        try {
+          id = (JSON.parse(text) as { id?: string }).id ?? id;
+        } catch {
+          /* keep key-derived id */
+        }
+        if (client.sentIds.has(id)) continue;
+        client.sentIds.add(id);
+        client.write(`event: message\nid: ${id}\ndata: ${text}\n\n`);
+      }
+    } catch {
+      /* snapshot best-effort */
+    }
+
+    const ping = setInterval(() => client.write(": ping\n\n"), 25000);
+    const cleanup = () => {
+      if (client.closed) return;
+      client.closed = true;
+      clearInterval(ping);
+      this.clients.delete(client);
+      writer.close().catch(() => {});
+    };
+    request.signal.addEventListener("abort", cleanup);
+
+    return new Response(readable, {
+      headers: {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-store",
+        "x-accel-buffering": "no",
+      },
+    });
+  }
+
+  private broadcast(record: { id?: string }): void {
+    const data = JSON.stringify(record);
+    const id = record.id ?? "";
+    for (const client of this.clients) {
+      if (client.closed) {
+        this.clients.delete(client);
+        continue;
+      }
+      if (id && client.sentIds.has(id)) continue;
+      if (id) client.sentIds.add(id);
+      client.write(`event: message\nid: ${id}\ndata: ${data}\n\n`);
+    }
+  }
+}

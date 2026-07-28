@@ -4,9 +4,23 @@ Disposable email at **https://mail.myslop.app** — a Cloudflare Worker in front
 
 Sign in at **https://mail.myslop.app/dashboard** ([shoo.dev](https://shoo.dev)) to mint API tokens, claim addresses, and read mail.
 
-## Ownership model
+## Ownership & lease model
 
-Mail delivery is a global catch-all — anyone can send to any `@myslop.app` address. **Reading** is per-user: the first account to read or claim a name owns it, and other accounts get `403`. So your OTPs and magic links stay private. Ownership rows live in D1; a row is created either by an explicit claim or automatically the first time you read an inbox.
+Mail delivery is a global catch-all — anyone can send to any `@myslop.app` address. **Reading** is per-user: the first account to read or claim a name owns it, and other accounts get `403`. So your OTPs and magic links stay private. Ownership rows live in D1.
+
+Two tiers:
+
+- **Leased (throwaway)** — created automatically the first time you read/stream a name. Carries a sliding `lease_expires_at` (default 1 day, `?lease=<hours>` up to 7). Every read, stream connect, or incoming mail extends it; once it lapses the nightly sweep releases the name and deletes its mail. Throwaways clean themselves up — no manual release.
+- **Permanent (claimed)** — `POST /claim` sets `claimed=1` and clears the lease. Kept until you release it. Use for addresses you sign back into later.
+
+## Push (SSE) via Durable Objects
+
+`email()` (delivery) and `fetch()` (reads) are separate stateless invocations, so pushing a delivered message to a waiting client needs shared state: an **`InboxHub` Durable Object per inbox name**. On subscribe it replays the R2 snapshot then holds the SSE connection open; `email()` calls the DO's `/push` and it fans the message out to every connected client. Same endpoint serves agents (`curl -N`) and the web (`EventSource`):
+
+- `GET /inbox/<name>/stream` — agent SSE (Bearer). Snapshot then live; each event's `data` is the full message.
+- `GET /api/addresses/<name>/stream` — dashboard SSE (session cookie).
+
+The `?wait=` long-poll stays as a fallback.
 
 ## Agent API (Bearer `msm_` tokens)
 
@@ -15,7 +29,8 @@ Mint tokens in the dashboard. Every request needs `Authorization: Bearer <msm_to
 - `POST /claim` `{name?, note?}` — reserve a name (generated `adjective-noun` if omitted). `201` granted, `200` if you already own it, `409` if another account owns it.
 - `GET /claims` — your owned names.
 - `DELETE /claim/<name>` — release a name you own and delete its stored mail.
-- `GET /inbox/<name>?wait=<0-50>` — list messages, long-polling until one arrives. Auto-owns the name on first read.
+- `GET /inbox/<name>/stream` — **Server-Sent Events**: R2 snapshot then live push. Preferred over polling. `?lease=<hours>` extends the lease.
+- `GET /inbox/<name>?wait=<0-50>` — list messages, long-polling until one arrives. Auto-owns (leases) the name on first read.
 - `GET /inbox/<name>/<id>` — full message (`from`, `subject`, `text`, `html`, `links`).
 - `DELETE /inbox/<name>` — purge stored mail (keeps the ownership row).
 

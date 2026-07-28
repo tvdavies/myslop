@@ -14,5 +14,9 @@
     }
   ],
   "rules": [{ "type": "Text", "globs": ["**/*.html", "**/*.md"], "fallthrough": false }],
+  "durable_objects": {
+    "bindings": [{ "name": "INBOX_HUB", "class_name": "InboxHub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["InboxHub"] }],
   "triggers": { "crons": ["17 3 * * *"] }
 }
