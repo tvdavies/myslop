@@ -16,7 +16,3 @@ export function FieldBlock({ label, htmlFor, help, children, className }: {
     </div>
   );
 }
-
-export function NativeSelect(props: React.ComponentProps<"select">) {
-  return <select {...props} className={cn("native-select", props.className)} />;
-}

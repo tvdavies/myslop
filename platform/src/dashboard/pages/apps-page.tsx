@@ -4,11 +4,11 @@ import * as React from "react";
 import { AppDialog } from "@/components/dialogs/app-dialog";
 import { AudienceBadge, ResourceLedger, RoleBadge } from "@/components/directory/status";
 import { EmptyState, RouteError, RouteLoading } from "@/components/feedback/route-state";
-import { NativeSelect } from "@/components/form-controls";
 import { PageHeader } from "@/components/page-header";
 import { Panel } from "@/components/panel";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DashboardLink, navigate } from "@/hooks/use-dashboard-location";
 import { useDocumentTitle } from "@/hooks/use-document-title";
@@ -58,9 +58,9 @@ function AppIdentity({ app }: { app: ListedApp }) {
 function AppRowActions({ app, settingsHref }: { app: ListedApp; settingsHref: string }) {
   return (
     <div className="row-actions">
-      <a className={buttonVariants({ variant: "outline", size: "sm" })} href={app.url} target="_blank" rel="noopener"><ExternalLink />Open</a>
+      <a className={buttonVariants({ variant: "outline", size: "sm", className: "text-foreground" })} href={app.url} target="_blank" rel="noopener"><ExternalLink />Open</a>
       {app.permissions.viewSettings ? (
-        <DashboardLink className={buttonVariants({ variant: "outline", size: "sm" })} href={settingsHref}><Settings2 />Settings</DashboardLink>
+        <DashboardLink className={buttonVariants({ variant: "outline", size: "sm", className: "text-foreground" })} href={settingsHref}><Settings2 />Settings</DashboardLink>
       ) : null}
     </div>
   );
@@ -127,27 +127,30 @@ export function AppsPage({ route, current }: { route: AppsRoute; current: Dashbo
       <form className="directory-toolbar" role="search" aria-label="Filter apps" onSubmit={(event) => event.preventDefault()}>
         <label className="search-field">
           <span className="sr-only">Search apps</span>
-          <Search aria-hidden="true" />
-          <Input
-            type="search"
-            value={search}
-            placeholder="Search name, slug or description"
-            onChange={(event) => handleSearchChange(event.target.value)}
-          />
+          <InputGroup>
+            <InputGroupAddon><Search aria-hidden="true" /></InputGroupAddon>
+            <InputGroupInput
+              type="search"
+              value={search}
+              placeholder="Search name, slug or description"
+              onChange={(event) => handleSearchChange(event.target.value)}
+            />
+          </InputGroup>
         </label>
-        <NativeSelect aria-label="Audience" value={filters.audience} onChange={(event) => updateQuery({ audience: event.target.value })}>
+        <NativeSelect className="w-full" aria-label="Audience" value={filters.audience} onChange={(event) => updateQuery({ audience: event.target.value })}>
           <option value="">Any audience</option>
           <option value="restricted">Restricted</option>
           <option value="team">Team</option>
           <option value="public">Public</option>
         </NativeSelect>
-        <NativeSelect aria-label="Role" value={filters.role} onChange={(event) => updateQuery({ role: event.target.value })}>
+        <NativeSelect className="w-full" aria-label="Role" value={filters.role} onChange={(event) => updateQuery({ role: event.target.value })}>
           <option value="">Any role</option>
           <option value="owner">Owner</option>
           <option value="editor">Editor</option>
           <option value="viewer">Viewer</option>
         </NativeSelect>
         <NativeSelect
+          className="w-full"
           aria-label="Sort apps"
           value={`${filters.sort}-${filters.direction}`}
           onChange={(event) => handleSortChange(event.target.value)}

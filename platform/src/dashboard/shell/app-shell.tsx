@@ -2,6 +2,7 @@ import { LogOut, Menu } from "lucide-react";
 import * as React from "react";
 
 import { useAuth } from "@/auth/auth-provider";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useDashboardLocation } from "@/hooks/use-dashboard-location";
@@ -46,7 +47,10 @@ function ShellFrame({ children }: { children: React.ReactNode }) {
         <div className="topbar-spacer" />
         <ThemeMenu />
         <div className="topbar-user">
-          {picture ? <img src={picture} alt="" /> : <span className="user-fallback" aria-hidden="true">{userLabel.charAt(0).toUpperCase()}</span>}
+          <Avatar size="sm">
+            {picture ? <AvatarImage src={picture} alt="" /> : null}
+            <AvatarFallback aria-hidden="true">{userLabel.charAt(0).toUpperCase()}</AvatarFallback>
+          </Avatar>
           <span>{userLabel}</span>
         </div>
         <Button variant="ghost" size="sm" aria-label="Sign out" onClick={() => void auth.signOut()}><LogOut /><span className="hidden sm:inline">Sign out</span></Button>

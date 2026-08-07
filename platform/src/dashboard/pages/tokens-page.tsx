@@ -4,11 +4,12 @@ import { toast } from "sonner";
 
 import { SimpleConfirmDialog } from "@/components/dialogs/simple-confirm-dialog";
 import { EmptyState, RouteError, RouteLoading } from "@/components/feedback/route-state";
-import { FieldBlock, NativeSelect } from "@/components/form-controls";
+import { FieldBlock } from "@/components/form-controls";
 import { PageHeader } from "@/components/page-header";
 import { Panel, PanelBody, PanelHeader } from "@/components/panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { useRouteResource } from "@/hooks/use-route-resource";
@@ -91,12 +92,12 @@ export function TokensPage() {
             <PanelHeader title="Generate token" description="Use an all-app token or restrict it to one app you can manage." />
             <PanelBody>
               <form onSubmit={createToken}>
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="form-grid sm:grid-cols-2">
                   <FieldBlock label="Token name" htmlFor="token-name">
                     <Input id="token-name" maxLength={100} placeholder="Laptop or agent name" value={name} onChange={(event) => setName(event.target.value)} />
                   </FieldBlock>
                   <FieldBlock label="Scope" htmlFor="token-scope">
-                    <NativeSelect id="token-scope" value={scope} onChange={(event) => setScope(event.target.value)}>
+                    <NativeSelect className="w-full" id="token-scope" value={scope} onChange={(event) => setScope(event.target.value)}>
                       <option value="">All apps I can manage</option>
                       {manageable.map((app) => <option key={app.id} value={app.id}>Only {app.name}</option>)}
                     </NativeSelect>

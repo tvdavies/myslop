@@ -115,9 +115,22 @@ test("tokens page renders scope labels for global and app-scoped tokens", async 
   await expect(page.getByRole("cell", { name: "All manageable apps" })).toBeVisible();
   await expect(page.getByRole("cell", { name: "Commercial Dashboard" })).toBeVisible();
   await expect(page.getByRole("cell", { name: "Never" })).toBeVisible();
+
+  const tokenName = page.getByLabel("Token name");
+  const tokenScope = page.getByLabel("Scope");
+  const [nameBox, scopeBox] = await Promise.all([tokenName.boundingBox(), tokenScope.boundingBox()]);
+  expect(nameBox).not.toBeNull();
+  expect(scopeBox).not.toBeNull();
+  expect(nameBox!.y).toBeCloseTo(scopeBox!.y, 0);
+  expect(nameBox!.height).toBe(36);
+  expect(scopeBox!.height).toBe(36);
   await axeClean(page);
 
   await page.setViewportSize({ width: 390, height: 844 });
+  const [mobileNameBox, mobileScopeBox] = await Promise.all([tokenName.boundingBox(), tokenScope.boundingBox()]);
+  expect(mobileNameBox).not.toBeNull();
+  expect(mobileScopeBox).not.toBeNull();
+  expect(mobileScopeBox!.y).toBeGreaterThan(mobileNameBox!.y + mobileNameBox!.height);
   await expect(page.locator(".mobile-directory .mobile-admin-row")).toHaveCount(2);
   await expect(page.locator(".mobile-directory")).toContainText("All manageable apps");
   await axeClean(page);

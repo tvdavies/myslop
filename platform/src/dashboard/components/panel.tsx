@@ -1,21 +1,22 @@
+import { Card, CardAction, CardContent, CardHeader } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
-export function Panel({ className, ...props }: React.ComponentProps<"section">) {
-  return <section className={cn("panel", className)} {...props} />;
+export function Panel({ className, ...props }: React.ComponentProps<typeof Card>) {
+  return <Card size="sm" className={cn("panel gap-0 py-0", className)} {...props} />;
 }
 
 export function PanelHeader({ title, description, meta, action }: { title: string; description?: string; meta?: React.ReactNode; action?: React.ReactNode }) {
   return (
-    <header className="panel-header">
+    <CardHeader className="panel-header">
       <div>
         <h2>{title}</h2>
         {description ? <p>{description}</p> : null}
       </div>
-      {action || meta ? <div className="panel-header-meta">{action || meta}</div> : null}
-    </header>
+      {action || meta ? <CardAction className="panel-header-meta">{action || meta}</CardAction> : null}
+    </CardHeader>
   );
 }
 
-export function PanelBody({ className, ...props }: React.ComponentProps<"div">) {
-  return <div className={cn("panel-body", className)} {...props} />;
+export function PanelBody({ className, ...props }: React.ComponentProps<typeof CardContent>) {
+  return <CardContent className={cn("panel-body", className)} {...props} />;
 }

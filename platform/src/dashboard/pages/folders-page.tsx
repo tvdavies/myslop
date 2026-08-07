@@ -28,7 +28,7 @@ export function FoldersPage() {
     return (
       <div className="row-actions">
         <DashboardLink
-          className={buttonVariants({ variant: "outline", size: "sm" })}
+          className={buttonVariants({ variant: "outline", size: "sm", className: "text-foreground" })}
           href={dashboard.href(`/folders/${encodeURIComponent(folder.id)}`)}
         >
           {icons ? <FolderOpen /> : null}Open

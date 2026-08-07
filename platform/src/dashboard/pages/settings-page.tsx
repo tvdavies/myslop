@@ -86,8 +86,8 @@ export function SettingsPage({ appId, hash }: { appId: string; hash: string }) {
           </div>
         </div>
         <div className="settings-header-actions">
-          <a className={buttonVariants({ variant: "outline" })} href={app.url} target="_blank" rel="noopener"><ExternalLink />Open app</a>
-          <DashboardLink className={buttonVariants({ variant: "outline" })} href={backHref}><ArrowLeft />Back to library</DashboardLink>
+          <a className={buttonVariants({ variant: "outline", className: "text-foreground" })} href={app.url} target="_blank" rel="noopener"><ExternalLink />Open app</a>
+          <DashboardLink className={buttonVariants({ variant: "outline", className: "text-foreground" })} href={backHref}><ArrowLeft />Back to library</DashboardLink>
         </div>
       </header>
       {app.managedBy === "git" ? (

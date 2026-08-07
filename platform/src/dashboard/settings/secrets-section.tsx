@@ -55,7 +55,7 @@ export function SecretsSection({ detail, refresh }: { detail: AppDetailResponse;
             void saveSecret(name.trim(), value, `${name.trim()} set`);
           }}
         >
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="form-grid sm:grid-cols-2">
             <FieldBlock label="Secret name" htmlFor="new-secret-name">
               <Input
                 id="new-secret-name"

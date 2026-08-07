@@ -2,11 +2,12 @@ import { LoaderCircle } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { FieldBlock } from "@/components/form-controls";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
-import { FieldBlock, NativeSelect } from "@/components/form-controls";
 import { apiRequest, errorMessage } from "@/lib/api";
 import { nestedFolders } from "@/lib/folders";
 import { slugify } from "@/lib/format";
@@ -103,16 +104,16 @@ export function AppDialog({ open, onOpenChange, defaultFolderId = "", onCreated 
                 onChange={(event) => setDescription(event.target.value)}
               />
             </FieldBlock>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="form-grid sm:grid-cols-2">
               <FieldBlock label="Audience" htmlFor="app-audience">
-                <NativeSelect id="app-audience" value={audience} onChange={(event) => setAudience(event.target.value as AppAudience)}>
+                <NativeSelect className="w-full" id="app-audience" value={audience} onChange={(event) => setAudience(event.target.value as AppAudience)}>
                   <option value="team">Team</option>
                   <option value="restricted">Restricted</option>
                   <option value="public">Public</option>
                 </NativeSelect>
               </FieldBlock>
               <FieldBlock label="Location" htmlFor="app-folder">
-                <NativeSelect id="app-folder" value={folderId} onChange={(event) => setFolderId(event.target.value)}>
+                <NativeSelect className="w-full" id="app-folder" value={folderId} onChange={(event) => setFolderId(event.target.value)}>
                   <option value="">Root</option>
                   {nestedFolders(dashboard.folders).map(({ folder, depth }) => (
                     <option key={folder.id} value={folder.id}>{"— ".repeat(depth)}{folder.name}</option>

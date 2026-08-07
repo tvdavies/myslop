@@ -3,11 +3,11 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { RouteError, RouteLoading } from "@/components/feedback/route-state";
-import { NativeSelect } from "@/components/form-controls";
 import { PageHeader } from "@/components/page-header";
 import { Panel, PanelHeader } from "@/components/panel";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { useRouteResource } from "@/hooks/use-route-resource";
@@ -54,6 +54,7 @@ function MemberControl<T extends string>({ editable, value, options, disabled, a
   if (!editable) return <Badge variant="outline">{value}</Badge>;
   return (
     <NativeSelect
+      className="w-full"
       aria-label={ariaLabel}
       value={value}
       disabled={disabled}
