@@ -2,10 +2,11 @@ import { LoaderCircle } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { FieldBlock } from "@/components/form-controls";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { FieldBlock, NativeSelect } from "@/components/form-controls";
+import { NativeSelect } from "@/components/ui/native-select";
 import { apiRequest, errorMessage } from "@/lib/api";
 import { availableFolderOptions } from "@/lib/folders";
 import { slugify } from "@/lib/format";
@@ -88,7 +89,7 @@ export function FolderDialog({ open, onOpenChange, folder, onSaved }: {
               </FieldBlock>
             ) : null}
             <FieldBlock label="Parent folder" htmlFor="folder-parent">
-              <NativeSelect id="folder-parent" value={parentId} onChange={(event) => setParentId(event.target.value)}>
+              <NativeSelect className="w-full" id="folder-parent" value={parentId} onChange={(event) => setParentId(event.target.value)}>
                 <option value="">Root</option>
                 {availableFolderOptions(dashboard.folders, folder?.id || "").map(({ folder: option, depth }) => (
                   <option key={option.id} value={option.id}>{"— ".repeat(depth)}{option.name}</option>

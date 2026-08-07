@@ -3,9 +3,9 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { RoleBadge } from "@/components/directory/status";
-import { NativeSelect } from "@/components/form-controls";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { NativeSelect } from "@/components/ui/native-select";
 import { apiRequest, errorMessage } from "@/lib/api";
 import { useDashboard } from "@/shell/dashboard-context";
 import { SettingsSection } from "@/settings/settings-section";
@@ -184,7 +184,7 @@ export function AccessSection({ detail, teamMembers, teamGroups, refresh }: {
           ) : null}
           <label className="field-block">
             <span className="field-label">Base audience</span>
-            <NativeSelect value={audience} disabled={blocked} onChange={(event) => setAudience(event.target.value as typeof audience)}>
+            <NativeSelect className="w-full" value={audience} disabled={blocked} onChange={(event) => setAudience(event.target.value as typeof audience)}>
               <option value="restricted">Restricted — only assigned people and groups</option>
               <option value="team">Team — every active team member can view</option>
               <option value="public">Public — anyone can view</option>
@@ -212,6 +212,7 @@ export function AccessSection({ detail, teamMembers, teamGroups, refresh }: {
                         />
                         <span>{label}<small>{memberSublabel(member, isPrimary)}</small></span>
                         <NativeSelect
+                          className="w-full"
                           aria-label={`Role for ${label}`}
                           value={role}
                           disabled={isPrimary || !active || blocked || !checked}
@@ -247,6 +248,7 @@ export function AccessSection({ detail, teamMembers, teamGroups, refresh }: {
                         />
                         <span>{group.name}<small>{group.memberCount} members</small></span>
                         <NativeSelect
+                          className="w-full"
                           aria-label={`Role for ${group.name}`}
                           value={role}
                           disabled={blocked || !checked}

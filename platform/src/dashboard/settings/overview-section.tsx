@@ -2,9 +2,10 @@ import { LoaderCircle } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
-import { FieldBlock, NativeSelect } from "@/components/form-controls";
+import { FieldBlock } from "@/components/form-controls";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest, errorMessage } from "@/lib/api";
 import { nestedFolders } from "@/lib/folders";
@@ -58,7 +59,7 @@ export function OverviewSection({ detail, refresh }: { detail: AppDetailResponse
   return (
     <SettingsSection id="overview" title="Overview" description="Identity, ownership and library location.">
       <form onSubmit={saveMetadata}>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="form-grid sm:grid-cols-2">
           <FieldBlock label="Name" htmlFor="settings-name">
             <Input
               id="settings-name"
@@ -93,6 +94,7 @@ export function OverviewSection({ detail, refresh }: { detail: AppDetailResponse
       <form onSubmit={moveApp}>
         <FieldBlock label="Folder" htmlFor="settings-folder" help="Moving an app changes where it appears, not its URL.">
           <NativeSelect
+            className="w-full"
             id="settings-folder"
             value={folderId}
             disabled={!app.permissions.moveApp}

@@ -1,5 +1,6 @@
 import { Boxes, Folder, FolderCog, KeyRound, LayoutGrid, ShieldCheck, UsersRound } from "lucide-react";
 
+import { NativeSelect } from "@/components/ui/native-select";
 import { DashboardLink } from "@/hooks/use-dashboard-location";
 import { nestedFolders } from "@/lib/folders";
 import { parseDashboardRoute, type DashboardLocation } from "@/lib/routing";
@@ -39,7 +40,8 @@ export function SidebarNavigation({ current, onNavigate }: { current: DashboardL
     <div className="sidebar-layout">
       <div className="sidebar-team">
         <label htmlFor="team-selector">Team</label>
-        <select
+        <NativeSelect
+          className="w-full"
           id="team-selector"
           value={dashboard.teamId}
           onChange={(event) => {
@@ -48,7 +50,7 @@ export function SidebarNavigation({ current, onNavigate }: { current: DashboardL
           }}
         >
           {dashboard.me.teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
-        </select>
+        </NativeSelect>
         <p>Your team role: <strong>{dashboard.team.role}</strong></p>
       </div>
       <nav aria-label="Application library" className="sidebar-nav">

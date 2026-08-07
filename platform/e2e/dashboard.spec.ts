@@ -147,6 +147,14 @@ test("renders the authenticated app library and persists a dark theme", async ({
   await expect(page.getByRole("link", { name: "Open" })).toHaveAttribute("target", "_blank");
   await expect(page.getByRole("link", { name: "Settings" })).toBeVisible();
 
+  const searchGroup = page.locator('[data-slot="input-group"]');
+  const searchIcon = searchGroup.locator('[data-slot="input-group-addon"]');
+  const searchInput = searchGroup.getByPlaceholder("Search name, slug or description");
+  const [iconBox, inputBox] = await Promise.all([searchIcon.boundingBox(), searchInput.boundingBox()]);
+  expect(iconBox).not.toBeNull();
+  expect(inputBox).not.toBeNull();
+  expect(iconBox!.x + iconBox!.width).toBeLessThanOrEqual(inputBox!.x + 1);
+
   await page.getByRole("button", { name: "Choose color theme" }).click();
   await page.getByRole("menuitem", { name: "Dark theme" }).click();
   await expect(page.locator("html")).toHaveClass(/dark/);
