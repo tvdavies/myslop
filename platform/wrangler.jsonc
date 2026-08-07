@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "myslop-apps",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "apps.myslop.app", "custom_domain": true }
+  ],
+  "r2_buckets": [
+    { "binding": "ASSETS", "bucket_name": "myslop-app-assets" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "CONTROL_DB",
+      "database_name": "myslop-apps",
+      "database_id": "d5c67bf9-6ec6-4c95-924e-9cf3996d8cd5"
+    }
+  ],
+  "triggers": {
+    "crons": ["17 * * * *"]
+  },
+  "dispatch_namespaces": [
+    {
+      "binding": "DISPATCHER",
+      "namespace": "myslop-apps-production",
+      "outbound": {
+        "service": "myslop-apps-outbound",
+        "parameters": ["policy"]
+      }
+    }
+  ],
+  "rules": [
+    { "type": "Text", "globs": ["**/*.html", "**/*.md"], "fallthrough": false }
+  ]
+}

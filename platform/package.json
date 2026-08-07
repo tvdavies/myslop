@@ -1,0 +1,20 @@
+{
+  "name": "myslop-apps",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bunx wrangler dev",
+    "deploy": "bun scripts/deploy.ts",
+    "distribute": "bun scripts/gen-distribution.ts",
+    "typecheck": "bun scripts/gen-distribution.ts && bunx tsc --noEmit",
+    "test": "bun test",
+    "cli": "bun cli/index.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "@types/bun": "latest",
+    "typescript": "latest",
+    "wrangler": "latest"
+  }
+}
