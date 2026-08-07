@@ -8,7 +8,8 @@
     { "pattern": "apps.myslop.app", "custom_domain": true }
   ],
   "r2_buckets": [
-    { "binding": "ASSETS", "bucket_name": "myslop-app-assets" }
+    { "binding": "ASSETS", "bucket_name": "myslop-app-assets" },
+    { "binding": "MAIL_SPOOL", "bucket_name": "myslop-mail-spool" }
   ],
   "d1_databases": [
     {
@@ -18,7 +19,7 @@
     }
   ],
   "triggers": {
-    "crons": ["17 * * * *"]
+    "crons": ["* * * * *"]
   },
   "dispatch_namespaces": [
     {

@@ -37,6 +37,14 @@ export async function createD1(env: Env, name: string): Promise<{ uuid: string; 
   return cf(env, "/d1/database", { method: "POST", body: JSON.stringify({ name }) });
 }
 
+export async function getD1(env: Env, id: string): Promise<{ uuid: string; name: string }> {
+  return cf(env, `/d1/database/${encodeURIComponent(id)}`);
+}
+
+export async function getR2Bucket(env: Env, name: string): Promise<{ name: string }> {
+  return cf(env, `/r2/buckets/${encodeURIComponent(name)}`);
+}
+
 export async function createR2Bucket(env: Env, name: string): Promise<void> {
   await cf(env, "/r2/buckets", { method: "POST", body: JSON.stringify({ name }) });
 }
@@ -116,14 +124,29 @@ export async function uploadUserWorker(env: Env, options: WorkerUploadOptions): 
     if (!app.r2_bucket) throw new Error("files capability is not provisioned");
     bindings.push({ type: "r2_bucket", name: "FILES", bucket_name: app.r2_bucket });
   }
+  if (manifest.capabilities.email || manifest.capabilities.schedules.length) {
+    bindings.push({ type: "secret_text", name: "MYSLOP_INTERNAL_SECRET", text: env.INTERNAL_DISPATCH_SECRET });
+  }
+  for (const durableObject of manifest.capabilities.durableObjects) {
+    bindings.push({
+      type: "durable_object_namespace",
+      name: durableObject.binding,
+      class_name: durableObject.className,
+      script_name: options.workerName,
+    });
+  }
   for (const secret of secrets) {
     bindings.push({ type: "secret_text", name: secret.name, text: secret.value });
   }
+  const migrations = manifest.capabilities.durableObjects.length
+    ? [{ tag: `v${options.workerName}`, new_sqlite_classes: manifest.capabilities.durableObjects.map(({ className }) => className) }]
+    : undefined;
   const metadata = {
     main_module: "worker.mjs",
     compatibility_date: "2026-07-01",
     compatibility_flags: ["nodejs_compat"],
     bindings,
+    ...(migrations ? { migrations } : {}),
     keep_bindings: ["secret_text"],
   };
   const form = new FormData();

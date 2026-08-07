@@ -12,7 +12,9 @@ export interface Dispatcher {
 export interface Env {
   CONTROL_DB: D1Database;
   ASSETS: R2Bucket;
+  MAIL_SPOOL: R2Bucket;
   DISPATCHER: Dispatcher;
+  INTERNAL_DISPATCH_SECRET: string;
   CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_API_TOKEN: string;
   SECRET_ENCRYPTION_KEY: string;
@@ -45,6 +47,11 @@ export interface AppRow {
   active_version: number | null;
   created_at: number;
   updated_at: number;
+  archived_at: number | null;
+  managed_by: "manual" | "git";
+  source_hash: string | null;
+  d1_adopted: number;
+  r2_adopted: number;
 }
 
 export interface DeploymentRow {

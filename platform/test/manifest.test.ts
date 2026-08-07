@@ -7,7 +7,7 @@ describe("capability manifest", () => {
       version: 1,
       assets: true,
       worker: false,
-      capabilities: { database: false, files: false, secrets: [], network: [] },
+      capabilities: { database: false, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
     });
   });
 
@@ -28,7 +28,37 @@ describe("capability manifest", () => {
       files: true,
       secrets: ["HUBSPOT_TOKEN"],
       network: ["api.hubapi.com"],
+      email: false,
+      schedules: [],
+      durableObjects: [],
     });
+  });
+
+  test("normalizes app metadata, schedules, email, and durable objects", () => {
+    const manifest = resolveManifest({
+      app: { visibility: "public", domains: ["FILES.MYSLOP.APP"] },
+      capabilities: {
+        email: true,
+        schedules: ["17 3 * * *"],
+        durableObjects: [{ class: "InboxHub" }],
+      },
+    }, { assets: false, worker: true, migrations: false });
+    expect(manifest.capabilities).toEqual({
+      database: false,
+      files: false,
+      secrets: [],
+      network: [],
+      email: true,
+      schedules: ["17 3 * * *"],
+      durableObjects: [{ className: "InboxHub", binding: "INBOX_HUB" }],
+    });
+  });
+
+  test("rejects invalid app domains and schedules", () => {
+    expect(() => resolveManifest({ app: { domains: ["example.com"] } }, { assets: false, worker: false, migrations: false }))
+      .toThrow("myslop.app zone");
+    expect(() => resolveManifest({ capabilities: { schedules: ["every minute"] } }, { assets: false, worker: true, migrations: false }))
+      .toThrow("five-field");
   });
 
   test("rejects server capabilities without a Worker", () => {
@@ -59,7 +89,7 @@ describe("capability manifest", () => {
       assets: false,
       worker: true,
       typo: true,
-      capabilities: { database: false, files: false, secrets: [], network: [] },
+      capabilities: { database: false, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
     })).toThrow("unknown deployment manifest field");
     expect(() => parseResolvedManifest({
       version: 1,
@@ -74,7 +104,7 @@ describe("capability manifest", () => {
       version: 1,
       assets: false,
       worker: true,
-      capabilities: { database: true, files: false, secrets: [], network: [] },
+      capabilities: { database: true, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
     });
     expect(manifest.capabilities.database).toBe(true);
   });

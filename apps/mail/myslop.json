@@ -1,0 +1,25 @@
+{
+  "$schema": "https://apps.myslop.app/schema/v1.json",
+  "version": 1,
+  "app": {
+    "name": "Mail",
+    "description": "Disposable @myslop.app inboxes with authenticated ownership and live delivery.",
+    "visibility": "public",
+    "domains": ["mail.myslop.app"],
+    "resources": {
+      "database": {
+        "id": "acd3be93-eea1-46ee-9953-7b4311191f26",
+        "name": "myslop-mail"
+      },
+      "bucket": { "name": "myslop-mail" }
+    }
+  },
+  "capabilities": {
+    "database": true,
+    "files": true,
+    "network": ["shoo.dev"],
+    "email": true,
+    "schedules": ["17 3 * * *"],
+    "durableObjects": [{ "class": "InboxHub", "binding": "INBOX_HUB" }]
+  }
+}

@@ -4,7 +4,7 @@ export const TOKEN_PREFIX = "msa_";
 export const SESSION_COOKIE = "msa_sid";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
-export const RESERVED_BINDINGS = new Set(["DB", "FILES", "MYSLOP_APP_ID", "MYSLOP_APP_ORIGIN"]);
+export const RESERVED_BINDINGS = new Set(["DB", "FILES", "MYSLOP_APP_ID", "MYSLOP_APP_ORIGIN", "MYSLOP_INTERNAL_SECRET"]);
 
 export function validSlug(value: unknown): value is string {
   return typeof value === "string" && /^[a-z][a-z0-9-]{1,46}[a-z0-9]$/.test(value);

@@ -10,7 +10,7 @@ const setupSh = new TextDecoder().decode(
 );
 
 interface Env {
-  BUCKET: R2Bucket;
+  FILES: R2Bucket;
   DB: D1Database;
   EVENTS_SECRET: string; // shared with events/storage: verifies per-app scoped tokens
 }
@@ -113,7 +113,7 @@ async function verifyShooIdToken(idToken: string, expectedAud: string): Promise<
   const ok = await crypto.subtle.verify(
     { name: "ECDSA", hash: "SHA-256" },
     key,
-    unb64url(parts[2]),
+    unb64url(parts[2]) as BufferSource,
     enc.encode(`${parts[0]}.${parts[1]}`),
   );
   if (!ok) return null;
@@ -176,7 +176,7 @@ async function verifyAppToken(token: string, secret: string): Promise<string | n
     false,
     ["verify"],
   );
-  const ok = await crypto.subtle.verify("HMAC", key, unb64url(sig), enc.encode(body));
+  const ok = await crypto.subtle.verify("HMAC", key, unb64url(sig) as BufferSource, enc.encode(body));
   if (!ok) return null;
   try {
     const payload = JSON.parse(dec.decode(unb64url(body)));
@@ -378,7 +378,7 @@ async function handleApi(
     if (!row) return json({ error: "not found" }, 404);
 
     if (req.method === "DELETE") {
-      await env.BUCKET.delete(key);
+      await env.FILES.delete(key);
       await env.DB.prepare("DELETE FROM files WHERE key = ?").bind(key).run();
       return json({ ok: true });
     }
@@ -464,7 +464,7 @@ export default {
     // /setup is the same SPA in token-setup mode: it signs the user in and
     // auto-mints a token named from ?name=, shown on a clean copy page.
     if (url.pathname === "/dashboard" || url.pathname === "/dashboard/" || url.pathname === "/setup") {
-      return new Response(dashboardHtml, {
+      return new Response(dashboardHtml as unknown as string, {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
     }
@@ -485,7 +485,7 @@ export default {
     // Human-readable page rendering the same skill verbatim, plus install steps.
     if (url.pathname === "/skill") {
       const escaped = skillMd.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
-      return new Response(skillHtmlTemplate.replace("__SKILL_MD__", escaped), {
+      return new Response((skillHtmlTemplate as unknown as string).replace("__SKILL_MD__", escaped), {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" },
       });
     }
@@ -511,7 +511,7 @@ export default {
       const id = crypto.randomUUID().replaceAll("-", "").slice(0, 10);
       const objectKey = `app/${appId}/${id}/${filename}`;
       const clientType = req.headers.get("Content-Type");
-      await env.BUCKET.put(objectKey, req.body, {
+      await env.FILES.put(objectKey, req.body, {
         httpMetadata: {
           contentType:
             clientType && clientType !== "application/octet-stream"
@@ -542,7 +542,7 @@ export default {
       const objectKey = `${id}/${filename}`;
 
       const clientType = req.headers.get("Content-Type");
-      const obj = await env.BUCKET.put(objectKey, req.body, {
+      const obj = await env.FILES.put(objectKey, req.body, {
         httpMetadata: {
           contentType:
             clientType && clientType !== "application/octet-stream"
@@ -594,7 +594,7 @@ export default {
         }
       }
 
-      const obj = await env.BUCKET.get(key);
+      const obj = await env.FILES.get(key);
       if (!obj) return new Response("not found\n", { status: 404 });
 
       const headers = new Headers();

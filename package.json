@@ -8,9 +8,9 @@
     "apps/*"
   ],
   "scripts": {
-    "generate": "bun --cwd platform run distribute && bun --cwd apps/files run gen && bun --cwd apps/mail run gen",
-    "test": "bun --cwd platform test && bun --cwd apps/files test && bun --cwd apps/mail test && bun test scripts",
-    "typecheck": "bun --cwd platform run typecheck && bun --cwd apps/files run typecheck && bun --cwd apps/mail run typecheck && bunx tsc --noEmit",
+    "generate": "bun run --cwd platform distribute && bun run --cwd apps/files gen && bun run --cwd apps/mail gen",
+    "test": "bun run --cwd platform test && bun run --cwd apps/files test && bun run --cwd apps/mail test && bun test scripts",
+    "typecheck": "bun run --cwd platform typecheck && bun run --cwd apps/files typecheck && bun run --cwd apps/mail typecheck && bunx tsc --noEmit",
     "check": "bun run generate && bun run test && bun run typecheck",
     "sync-apps": "bun scripts/sync-apps.ts"
   },

@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - name: Verify source histories
+        run: |
+          git log --follow --oneline -- platform/src/index.ts >/dev/null
+          git log --follow --oneline -- apps/files/src/index.ts >/dev/null
+          git log --follow --oneline -- apps/mail/src/index.ts >/dev/null

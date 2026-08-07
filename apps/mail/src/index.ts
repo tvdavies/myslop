@@ -4,6 +4,7 @@ import dashboardHtml from "./dashboard.html";
 import skillMd from "./skill.md";
 import skillHtmlTemplate from "./skill.html";
 import setupShB64 from "./setup-sh.generated";
+import { internalNonceKey, verifyInternalRequest } from "../../../platform/src/internal";
 
 // Decoded once; stored base64 because raw shell text in the bundle trips the
 // Cloudflare API WAF on deploy.
@@ -12,10 +13,13 @@ const setupSh = new TextDecoder().decode(
 );
 
 interface Env {
-  MAIL: R2Bucket;
+  FILES: R2Bucket;
   DB: D1Database;
   INBOX_HUB: DurableObjectNamespace;
+  MYSLOP_INTERNAL_SECRET?: string;
 }
+
+const internalNonces = new Map<string, number>();
 
 const SHOO_ISSUER = "https://shoo.dev";
 const SHOO_JWKS_URL = "https://shoo.dev/.well-known/jwks.json";
@@ -115,8 +119,8 @@ async function verifyShooIdToken(idToken: string, expectedAud: string): Promise<
   let header: { alg?: string; kid?: string };
   let payload: ShooClaims;
   try {
-    header = JSON.parse(dec.decode(unb64url(parts[0])));
-    payload = JSON.parse(dec.decode(unb64url(parts[1])));
+    header = JSON.parse(dec.decode(unb64url(parts[0]!)));
+    payload = JSON.parse(dec.decode(unb64url(parts[1]!)));
   } catch {
     return null;
   }
@@ -133,8 +137,8 @@ async function verifyShooIdToken(idToken: string, expectedAud: string): Promise<
   const ok = await crypto.subtle.verify(
     { name: "ECDSA", hash: "SHA-256" },
     key,
-    unb64url(parts[2]),
-    enc.encode(`${parts[0]}.${parts[1]}`),
+    unb64url(parts[2]!) as BufferSource,
+    enc.encode(`${parts[0]!}.${parts[1]!}`),
   );
   if (!ok) return null;
 
@@ -310,7 +314,7 @@ function extractLinks(text: string, html: string): string[] {
 }
 
 async function listInbox(env: Env, inbox: string) {
-  const listed = await env.MAIL.list({
+  const listed = await env.FILES.list({
     prefix: `inbox/${inbox}/`,
     include: ["customMetadata"],
   });
@@ -514,7 +518,7 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
       .bind(name, user.id)
       .first();
     if (!owned) return json({ error: "not found" }, 404);
-    const obj = await env.MAIL.get(`inbox/${name}/${id}.json`);
+    const obj = await env.FILES.get(`inbox/${name}/${id}.json`);
     if (!obj) return json({ error: "not found" }, 404);
     return new Response(obj.body, { headers: { "content-type": "application/json; charset=utf-8" } });
   }
@@ -527,8 +531,8 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
       .bind(name, user.id)
       .run();
     if (!res.meta.changes) return json({ error: "not found" }, 404);
-    const listed = await env.MAIL.list({ prefix: `inbox/${name}/` });
-    await Promise.all(listed.objects.map((o) => env.MAIL.delete(o.key)));
+    const listed = await env.FILES.list({ prefix: `inbox/${name}/` });
+    await Promise.all(listed.objects.map((o) => env.FILES.delete(o.key)));
     return json({ released: name, deleted: listed.objects.length });
   }
 
@@ -547,7 +551,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
   const parts = url.pathname.split("/").filter(Boolean);
 
   // POST /claim { name?, note? } — reserve a name (generate one if omitted).
-  if (parts[0] === "claim" && !parts[1] && req.method === "POST") {
+  if (parts[0]! === "claim" && !parts[1]! && req.method === "POST") {
     let body: { name?: string; note?: string } = {};
     try {
       const raw = await req.text();
@@ -574,7 +578,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
   }
 
   // GET /claims — this user's owned names.
-  if (parts[0] === "claims" && !parts[1] && req.method === "GET") {
+  if (parts[0]! === "claims" && !parts[1]! && req.method === "GET") {
     const { results } = await env.DB.prepare(
       `SELECT name, note, claimed, created_at, lease_expires_at FROM inboxes WHERE user_id = ? ORDER BY created_at DESC`,
     )
@@ -595,35 +599,35 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
 
   // DELETE /claim/<name> — release a name you own AND purge its stored mail,
   // matching the dashboard's release. Giving up the name wipes the mailbox.
-  if (parts[0] === "claim" && parts[1] && req.method === "DELETE") {
-    const name = parts[1].toLowerCase();
+  if (parts[0]! === "claim" && parts[1]! && req.method === "DELETE") {
+    const name = parts[1]!.toLowerCase();
     if (!validInbox(name)) return json({ error: "invalid name" }, 400);
     const res = await env.DB.prepare("DELETE FROM inboxes WHERE name = ? AND user_id = ?")
       .bind(name, uid)
       .run();
     if (!res.meta.changes) return json({ error: "not found", name }, 404);
-    const listed = await env.MAIL.list({ prefix: `inbox/${name}/` });
-    await Promise.all(listed.objects.map((o) => env.MAIL.delete(o.key)));
+    const listed = await env.FILES.list({ prefix: `inbox/${name}/` });
+    await Promise.all(listed.objects.map((o) => env.FILES.delete(o.key)));
     return json({ released: name, deleted: listed.objects.length });
   }
 
   // Inbox access. Ownership is auto-established on first touch.
-  if (parts[0] !== "inbox" || !parts[1] || !validInbox(parts[1])) {
+  if (parts[0]! !== "inbox" || !parts[1]! || !validInbox(parts[1]!)) {
     return json({ error: "not found" }, 404);
   }
-  const inbox = parts[1];
+  const inbox = parts[1]!;
   const leaseHours = Number(url.searchParams.get("lease")) || undefined;
   const own = await ownInbox(env, inbox, uid, { leaseHours });
   if (!own.ok) return json({ error: "inbox owned by another account", inbox }, own.status);
 
   // GET /inbox/<name>/stream — Server-Sent Events: R2 snapshot then live push.
-  if (req.method === "GET" && parts[2] === "stream") {
+  if (req.method === "GET" && parts[2]! === "stream") {
     return hubSubscribe(env, inbox, req);
   }
 
   // GET /inbox/<name>/<id> — full message
-  if (req.method === "GET" && parts[2]) {
-    const obj = await env.MAIL.get(`inbox/${inbox}/${parts[2]}.json`);
+  if (req.method === "GET" && parts[2]!) {
+    const obj = await env.FILES.get(`inbox/${inbox}/${parts[2]!}.json`);
     if (!obj) return json({ error: "not found" }, 404);
     return new Response(obj.body, { headers: { "content-type": "application/json; charset=utf-8" } });
   }
@@ -641,121 +645,132 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
   }
 
   // DELETE /inbox/<name> — purge stored mail (keeps the ownership row).
-  if (req.method === "DELETE" && !parts[2]) {
-    const listed = await env.MAIL.list({ prefix: `inbox/${inbox}/` });
-    await Promise.all(listed.objects.map((o) => env.MAIL.delete(o.key)));
+  if (req.method === "DELETE" && !parts[2]!) {
+    const listed = await env.FILES.list({ prefix: `inbox/${inbox}/` });
+    await Promise.all(listed.objects.map((o) => env.FILES.delete(o.key)));
     return json({ deleted: listed.objects.length });
   }
 
   return json({ error: "method not allowed" }, 405);
 }
 
+async function ingestEmail(
+  env: Env,
+  ctx: ExecutionContext,
+  input: { id: string; sender: string; recipient: string; raw: ReadableStream | ArrayBuffer; rawSize?: number },
+): Promise<Response> {
+  const inbox = input.recipient.toLowerCase().split("@")[0] ?? "";
+  if (!validInbox(inbox) || (input.rawSize ?? 0) > MAX_RAW_SIZE) return json({ error: "mailbox unavailable" }, 422);
+  const objectKey = `inbox/${inbox}/${input.id}.json`;
+  if (await env.FILES.head(objectKey)) return json({ ok: true, duplicate: true });
+  const parsed = await PostalMime.parse(input.raw);
+  const receivedAt = new Date().toISOString();
+  const record = {
+    id: input.id,
+    inbox,
+    from: parsed.from?.address ?? input.sender,
+    fromName: parsed.from?.name ?? "",
+    to: input.recipient,
+    subject: parsed.subject ?? "",
+    receivedAt,
+    text: parsed.text ?? "",
+    html: parsed.html ?? "",
+    links: extractLinks(parsed.text ?? "", parsed.html ?? ""),
+  };
+  await env.FILES.put(objectKey, JSON.stringify(record), {
+    customMetadata: { from: record.from, subject: record.subject.slice(0, 256), receivedAt },
+  });
+  ctx.waitUntil((async () => {
+    await env.DB.prepare(
+      "UPDATE inboxes SET lease_expires_at = MAX(COALESCE(lease_expires_at, 0), ?) WHERE name = ? AND claimed = 0",
+    ).bind(Date.now() + DEFAULT_LEASE_H * 60 * 60 * 1000, inbox).run();
+    await notifyHub(env, inbox, record);
+  })());
+  return json({ ok: true, id: input.id }, 201);
+}
+
+async function runMaintenance(env: Env): Promise<void> {
+  const now = Date.now();
+  const { results: expired } = await env.DB.prepare(
+    "SELECT name FROM inboxes WHERE lease_expires_at IS NOT NULL AND lease_expires_at < ?",
+  ).bind(now).all<{ name: string }>();
+  for (const { name } of expired as { name: string }[]) {
+    const listed = await env.FILES.list({ prefix: `inbox/${name}/` });
+    await Promise.all(listed.objects.map((object) => env.FILES.delete(object.key)));
+    await env.DB.prepare("DELETE FROM inboxes WHERE name = ?").bind(name).run();
+  }
+  const cutoff = now - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  let cursor: string | undefined;
+  do {
+    const listed = await env.FILES.list({ prefix: "inbox/", cursor });
+    const stale = listed.objects.filter((object) => object.uploaded.getTime() < cutoff);
+    await Promise.all(stale.map((object) => env.FILES.delete(object.key)));
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+}
+
+async function internalRequest(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (!env.MYSLOP_INTERNAL_SECRET) return json({ error: "internal routing is unavailable" }, 503);
+  const url = new URL(req.url);
+  const expectedHash = req.headers.get("x-myslop-body-sha256") ?? "";
+  if (!expectedHash || !req.body) return json({ error: "not found" }, 404);
+  const raw = await req.arrayBuffer();
+  const actualHash = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", raw)));
+  if (actualHash !== expectedHash || !(await verifyInternalRequest(env.MYSLOP_INTERNAL_SECRET, req.method, url.pathname, expectedHash, req.headers))) {
+    return json({ error: "not found" }, 404);
+  }
+  const nonce = internalNonceKey(req.headers);
+  if (!nonce) return json({ error: "not found" }, 404);
+  const now = Date.now();
+  for (const [key, expiresAt] of internalNonces) if (expiresAt <= now) internalNonces.delete(key);
+  if (internalNonces.has(nonce)) return json({ error: "duplicate internal request" }, 409);
+  internalNonces.set(nonce, now + 5 * 60_000);
+  if (url.pathname === "/__email" && req.method === "POST") {
+    const id = req.headers.get("x-myslop-delivery-id") ?? "";
+    const sender = req.headers.get("x-myslop-mail-from") ?? "";
+    const recipient = req.headers.get("x-myslop-rcpt-to") ?? "";
+    if (!id || !sender || !recipient) return json({ error: "invalid delivery envelope" }, 400);
+    return ingestEmail(env, ctx, { id, sender, recipient, raw, rawSize: raw.byteLength });
+  }
+  if (url.pathname === "/__scheduled" && req.method === "POST") {
+    await runMaintenance(env);
+    return json({ ok: true });
+  }
+  return json({ error: "not found" }, 404);
+}
+
 export default {
-  // Catch-all delivery for *@myslop.app lands here. Delivery is global and is
-  // NOT gated by ownership — anyone can receive; ownership gates who can read.
   async email(message, env, ctx) {
-    const inbox = message.to.toLowerCase().split("@")[0] ?? "";
-    if (!validInbox(inbox) || message.rawSize > MAX_RAW_SIZE) {
-      message.setReject("mailbox unavailable");
-      return;
-    }
-    const parsed = await PostalMime.parse(message.raw);
-    const receivedAt = new Date().toISOString();
     const id = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-    const record = {
+    const response = await ingestEmail(env, ctx, {
       id,
-      inbox,
-      from: parsed.from?.address ?? message.from,
-      fromName: parsed.from?.name ?? "",
-      to: message.to,
-      subject: parsed.subject ?? "",
-      receivedAt,
-      text: parsed.text ?? "",
-      html: parsed.html ?? "",
-      links: extractLinks(parsed.text ?? "", parsed.html ?? ""),
-    };
-    await env.MAIL.put(`inbox/${inbox}/${id}.json`, JSON.stringify(record), {
-      customMetadata: {
-        from: record.from,
-        subject: record.subject.slice(0, 256),
-        receivedAt,
-      },
+      sender: message.from,
+      recipient: message.to,
+      raw: message.raw,
+      rawSize: message.rawSize,
     });
-    // Keep an actively-receiving leased inbox alive, and push to live listeners.
-    ctx.waitUntil(
-      (async () => {
-        await env.DB.prepare(
-          "UPDATE inboxes SET lease_expires_at = MAX(COALESCE(lease_expires_at, 0), ?) WHERE name = ? AND claimed = 0",
-        )
-          .bind(Date.now() + DEFAULT_LEASE_H * 60 * 60 * 1000, inbox)
-          .run();
-        await notifyHub(env, inbox, record);
-      })(),
-    );
+    if (!response.ok) message.setReject("mailbox unavailable");
   },
 
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
-
-    // --- Web surfaces ---
+    if (url.pathname === "/__email" || url.pathname === "/__scheduled") return internalRequest(req, env, ctx);
     if (url.pathname === "/dashboard" || url.pathname === "/dashboard/" || url.pathname === "/setup") {
-      return new Response(dashboardHtml, {
-        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
-      });
+      return new Response(dashboardHtml as unknown as string, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     }
-    if (url.pathname === "/setup.sh") {
-      return new Response(setupSh, {
-        headers: { "content-type": "text/x-shellscript; charset=utf-8", "cache-control": "public, max-age=300" },
-      });
-    }
-    if (url.pathname === "/skill.md") {
-      return new Response(skillMd, {
-        headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "public, max-age=300" },
-      });
-    }
+    if (url.pathname === "/setup.sh") return new Response(setupSh, { headers: { "content-type": "text/x-shellscript; charset=utf-8", "cache-control": "public, max-age=300" } });
+    if (url.pathname === "/skill.md") return new Response(skillMd, { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "public, max-age=300" } });
     if (url.pathname === "/skill") {
-      const escaped = skillMd.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
-      return new Response(skillHtmlTemplate.replace("__SKILL_MD__", escaped), {
-        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" },
-      });
+      const escaped = skillMd.replace(/[&<>]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[character]!));
+      return new Response((skillHtmlTemplate as unknown as string).replace("__SKILL_MD__", escaped), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" } });
     }
-
     if (url.pathname.startsWith("/api/")) return handleApi(req, env, url, ctx);
-
-    if (url.pathname === "/" && req.method === "GET") {
-      return Response.redirect(`${url.origin}/dashboard`, 302);
-    }
-
-    // Agent API (Bearer msm_ tokens): /claim, /claims, /inbox/...
+    if (url.pathname === "/" && req.method === "GET") return Response.redirect(`${url.origin}/dashboard`, 302);
     return handleAgentApi(req, env, url, ctx);
   },
 
-  // Nightly sweep: (1) release expired leases (delete row + purge their mail),
-  // then (2) delete any stored mail older than the retention window as a backstop.
   async scheduled(_event, env) {
-    const now = Date.now();
-
-    // (1) Expired leases → release the name and purge its mailbox.
-    const { results: expired } = await env.DB.prepare(
-      "SELECT name FROM inboxes WHERE lease_expires_at IS NOT NULL AND lease_expires_at < ?",
-    )
-      .bind(now)
-      .all<{ name: string }>();
-    for (const { name } of expired as { name: string }[]) {
-      const listed = await env.MAIL.list({ prefix: `inbox/${name}/` });
-      await Promise.all(listed.objects.map((o) => env.MAIL.delete(o.key)));
-      await env.DB.prepare("DELETE FROM inboxes WHERE name = ?").bind(name).run();
-    }
-
-    // (2) Retention backstop for any orphaned/old mail.
-    const cutoff = now - RETENTION_DAYS * 24 * 60 * 60 * 1000;
-    let cursor: string | undefined;
-    do {
-      const listed = await env.MAIL.list({ prefix: "inbox/", cursor });
-      const stale = listed.objects.filter((o) => o.uploaded.getTime() < cutoff);
-      await Promise.all(stale.map((o) => env.MAIL.delete(o.key)));
-      cursor = listed.truncated ? listed.cursor : undefined;
-    } while (cursor);
+    await runMaintenance(env);
   },
 } satisfies ExportedHandler<Env>;
 
@@ -824,9 +839,9 @@ export class InboxHub {
 
     // Snapshot: replay stored mail oldest→newest (id timestamp-prefix sorts).
     try {
-      const listed = await this.env.MAIL.list({ prefix: `inbox/${name}/` });
+      const listed = await this.env.FILES.list({ prefix: `inbox/${name}/` });
       for (const key of listed.objects.map((o) => o.key).sort()) {
-        const obj = await this.env.MAIL.get(key);
+        const obj = await this.env.FILES.get(key);
         if (!obj) continue;
         const text = await obj.text();
         let id = key.split("/").pop()!.replace(/\.json$/, "");

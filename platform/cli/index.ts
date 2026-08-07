@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
-import { resolve, relative } from "node:path";
-import { stat } from "node:fs/promises";
-import { resolveManifest, type SourceManifest } from "../src/manifest";
+import { resolve } from "node:path";
+import { createAppArtifact } from "../src/artifact";
 
 const API = process.env.MYSLOP_APPS_API || "https://apps.myslop.app";
 const configHome = process.env.XDG_CONFIG_HOME || `${process.env.HOME}/.config`;
@@ -71,67 +70,6 @@ Environment:
   process.exit(0);
 }
 
-async function directoryExists(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-}
-
-async function collectAssets(root: string) {
-  const publicDir = resolve(root, "public");
-  if (!(await directoryExists(publicDir))) return [];
-  const glob = new Bun.Glob("**/*");
-  const assets: { path: string; contentType?: string; data: string }[] = [];
-  for await (const path of glob.scan({ cwd: publicDir, onlyFiles: true, dot: true })) {
-    const file = Bun.file(resolve(publicDir, path));
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    assets.push({
-      path: relative(publicDir, resolve(publicDir, path)).replaceAll("\\", "/"),
-      contentType: file.type || undefined,
-      data: Buffer.from(bytes).toString("base64"),
-    });
-  }
-  return assets;
-}
-
-async function buildWorker(root: string): Promise<string | undefined> {
-  const candidates = ["worker.ts", "worker.js", "worker.mjs"].map((name) => resolve(root, name));
-  const entry = await Promise.all(candidates.map(async (path) => await Bun.file(path).exists() ? path : null)).then((all) => all.find(Boolean));
-  if (!entry) return undefined;
-  const result = await Bun.build({
-    entrypoints: [entry],
-    target: "browser",
-    format: "esm",
-    minify: false,
-    sourcemap: "none",
-  });
-  if (!result.success) fail(result.logs.map(String).join("\n"));
-  return await result.outputs[0].text();
-}
-
-async function readSourceManifest(root: string): Promise<SourceManifest> {
-  const path = resolve(root, "myslop.json");
-  if (!(await Bun.file(path).exists())) return {};
-  try {
-    return await Bun.file(path).json() as SourceManifest;
-  } catch (error) {
-    fail(`invalid myslop.json: ${error instanceof Error ? error.message : error}`);
-  }
-}
-
-async function collectMigrations(root: string): Promise<{ name: string; sql: string }[]> {
-  const dir = resolve(root, "migrations");
-  if (!(await directoryExists(dir))) return [];
-  const glob = new Bun.Glob("*.sql");
-  const paths: string[] = [];
-  for await (const path of glob.scan({ cwd: dir, onlyFiles: true })) paths.push(path);
-  paths.sort();
-  return Promise.all(paths.map(async (path) => ({ name: path, sql: await Bun.file(resolve(dir, path)).text() })));
-}
-
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
@@ -172,23 +110,13 @@ if (command === "apps") {
   if (!slug) usage();
   const root = resolve(args[1] || ".");
   const app = await findApp(slug);
-  const [assets, worker, migrations, sourceManifest] = await Promise.all([
-    collectAssets(root),
-    buildWorker(root),
-    collectMigrations(root),
-    readSourceManifest(root),
-  ]);
-  if (!assets.length && !worker) fail("nothing to deploy: expected public/ assets or worker.ts");
-  let manifest;
+  let artifact;
   try {
-    manifest = resolveManifest(sourceManifest, {
-      assets: assets.length > 0,
-      worker: Boolean(worker),
-      migrations: migrations.length > 0,
-    });
+    artifact = await createAppArtifact(root);
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
+  const { manifest, assets, worker, migrations } = artifact.deployment;
   const detected = [
     assets.length ? `${assets.length} assets` : null,
     worker ? "Worker" : null,

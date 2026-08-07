@@ -7,6 +7,8 @@ import {
   attachCustomDomain,
   createD1,
   createR2Bucket,
+  getD1,
+  getR2Bucket,
   deleteCustomDomain,
   deleteD1,
   deleteR2Bucket,
@@ -26,7 +28,8 @@ import {
   validBindingName,
   validSlug,
 } from "./core";
-import { MANIFEST_SCHEMA, parseResolvedManifest, type ResolvedManifest } from "./manifest";
+import { MANIFEST_SCHEMA, normalizeAppDomain, parseResolvedManifest, type ResolvedManifest } from "./manifest";
+import { acceptEmail, dispatchDueSchedules, reconcileAppSchedules, retryEmailDeliveries } from "./runtime";
 import { encryptSecret, loadAppSecrets } from "./secrets";
 import type { AppRow, DeploymentRow, Env, User } from "./types";
 
@@ -65,13 +68,17 @@ function publicApp(app: AppRow) {
     hasFiles: Boolean(app.r2_bucket),
     databaseDeleteAfter: app.d1_delete_after,
     filesDeleteAfter: app.r2_delete_after,
+    databaseAdopted: Boolean(app.d1_adopted),
+    filesAdopted: Boolean(app.r2_adopted),
+    managedBy: app.managed_by,
+    sourceHash: app.source_hash,
     createdAt: app.created_at,
     updatedAt: app.updated_at,
   };
 }
 
 function manifestComponents(manifestJson: string | null) {
-  if (!manifestJson) return { assets: false, worker: false, database: false, files: false, secrets: 0, network: 0 };
+  if (!manifestJson) return { assets: false, worker: false, database: false, files: false, secrets: 0, network: 0, email: false, schedules: 0, durableObjects: 0 };
   try {
     const manifest = parseResolvedManifest(JSON.parse(manifestJson));
     return {
@@ -81,9 +88,12 @@ function manifestComponents(manifestJson: string | null) {
       files: manifest.capabilities.files,
       secrets: manifest.capabilities.secrets.length,
       network: manifest.capabilities.network.length,
+      email: manifest.capabilities.email,
+      schedules: manifest.capabilities.schedules.length,
+      durableObjects: manifest.capabilities.durableObjects.length,
     };
   } catch {
-    return { assets: false, worker: false, database: false, files: false, secrets: 0, network: 0 };
+    return { assets: false, worker: false, database: false, files: false, secrets: 0, network: 0, email: false, schedules: 0, durableObjects: 0 };
   }
 }
 
@@ -138,6 +148,14 @@ async function getAppById(env: Env, id: string): Promise<AppRow | null> {
 
 async function getAppBySlug(env: Env, slug: string): Promise<AppRow | null> {
   return (await env.CONTROL_DB.prepare("SELECT * FROM apps WHERE slug=? AND archived_at IS NULL").bind(slug).first<AppRow>()) ?? null;
+}
+
+async function getAppIncludingArchived(env: Env, id: string): Promise<AppRow | null> {
+  return (await env.CONTROL_DB.prepare("SELECT * FROM apps WHERE id=?").bind(id).first<AppRow>()) ?? null;
+}
+
+async function getAppBySlugIncludingArchived(env: Env, slug: string): Promise<AppRow | null> {
+  return (await env.CONTROL_DB.prepare("SELECT * FROM apps WHERE slug=?").bind(slug).first<AppRow>()) ?? null;
 }
 
 async function canManage(env: Env, app: AppRow, principal: Principal): Promise<boolean> {
@@ -299,7 +317,7 @@ async function emptyAppBucket(env: Env, app: AppRow): Promise<void> {
     version: 1,
     assets: false,
     worker: true,
-    capabilities: { database: false, files: true, secrets: [], network: [] },
+    capabilities: { database: false, files: true, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
   };
   const source = `export default { async fetch(_request, env) {
     for (let page = 0; page < 400; page++) {
@@ -437,6 +455,13 @@ async function handleDeployLocked(req: Request, env: Env, principal: Principal, 
   if (manifest.assets !== (assets.length > 0) || manifest.worker !== Boolean(body.worker)) {
     return json({ error: "deployment contents do not match the resolved manifest" }, 400);
   }
+  if (manifest.capabilities.email) {
+    const existing = await env.CONTROL_DB.prepare(
+      `SELECT a.slug FROM apps a JOIN deployments d ON d.app_id=a.id AND d.version=a.active_version AND d.status='active'
+       WHERE a.id!=? AND a.archived_at IS NULL AND json_extract(d.manifest_json,'$.capabilities.email')=1 LIMIT 1`,
+    ).bind(app.id).first<{ slug: string }>();
+    if (existing) return json({ error: `email capability is already owned by ${existing.slug}` }, 409);
+  }
   if (migrations.length && !manifest.capabilities.database) {
     return json({ error: "migrations require the database capability" }, 400);
   }
@@ -526,6 +551,15 @@ async function handleDeployLocked(req: Request, env: Env, principal: Principal, 
       ),
     ]);
     if (!activated[0].meta.changes) throw new Error("deployment reservation expired before activation");
+    await reconcileAppSchedules(env, app.id, manifest.capabilities.schedules);
+    await env.CONTROL_DB.prepare("DELETE FROM app_durable_objects WHERE app_id=? AND version=?").bind(app.id, version).run();
+    if (manifest.capabilities.durableObjects.length) {
+      await env.CONTROL_DB.batch(manifest.capabilities.durableObjects.map(({ binding, className }) =>
+        env.CONTROL_DB.prepare(
+          "INSERT INTO app_durable_objects (app_id,version,binding,class_name,created_at) VALUES (?,?,?,?,?)",
+        ).bind(app.id, version, binding, className, Date.now()),
+      ));
+    }
     await audit(env, principal.user.id, "app.deployed", app.id, { version, manifest });
     return json({ deployment: { id: deploymentId, version, url: appUrl(app.slug), assets: assets.length, manifest } }, 201);
   } catch (error) {
@@ -538,7 +572,7 @@ async function handleDeployLocked(req: Request, env: Env, principal: Principal, 
         version: 1,
         assets: false,
         worker: false,
-        capabilities: { database: false, files: false, secrets: [], network: [] },
+        capabilities: { database: false, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
       };
       await scheduleUnusedResources(env, current, fallback).catch((cleanup) => console.error("failed resource scheduling failed", cleanup));
     }
@@ -650,7 +684,7 @@ async function handlePruneApp(req: Request, env: Env, principal: Principal, app:
       version: 1,
       assets: false,
       worker: false,
-      capabilities: { database: false, files: false, secrets: [], network: [] },
+      capabilities: { database: false, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
     } satisfies ResolvedManifest;
     const removed: string[] = [];
     if (!manifest.capabilities.files && current.r2_bucket) {
@@ -672,39 +706,267 @@ async function handleDestroyApp(req: Request, env: Env, principal: Principal, ap
   const body = await req.json().catch(() => ({})) as { confirm?: string };
   if (body.confirm !== app.slug) return json({ error: `confirm deletion with {\"confirm\":\"${app.slug}\"}` }, 400);
   return withAppOperationLock(env, app.id, async () => {
-    const domainHolder = `destroy-${randomHex(12)}`;
-    if (!(await acquirePlatformLock(env, "domains", domainHolder, 60 * 60_000))) {
-      return json({ error: "platform deployment in progress; retry shortly" }, 409, { "retry-after": "10" });
+    const current = await getAppById(env, app.id);
+    if (!current) return json({ ok: true, archived: app.slug });
+    const now = Date.now();
+    const recoveryUntil = now + RESOURCE_GRACE_MS;
+    await env.CONTROL_DB.prepare(
+      `UPDATE apps SET archived_at=?,updated_at=?,d1_delete_after=CASE WHEN d1_id IS NULL THEN NULL ELSE ? END,
+       r2_delete_after=CASE WHEN r2_bucket IS NULL THEN NULL ELSE ? END WHERE id=? AND archived_at IS NULL`,
+    ).bind(now, now, recoveryUntil, recoveryUntil, app.id).run();
+    await audit(env, principal.user.id, "app.archived", app.id, { slug: app.slug, recoveryUntil });
+    return json({ ok: true, archived: app.slug, recoveryUntil });
+  });
+}
+
+async function purgeArchivedApp(env: Env, app: AppRow): Promise<void> {
+  const domainHolder = `destroy-${randomHex(12)}`;
+  if (!(await acquirePlatformLock(env, "domains", domainHolder, 60 * 60_000))) throw new Error("platform domain lock is busy");
+  try {
+    const { results: deployments } = await env.CONTROL_DB.prepare(
+      "SELECT worker_name FROM deployments WHERE app_id=? AND worker_name IS NOT NULL",
+    ).bind(app.id).all<{ worker_name: string }>();
+    const workerNames = new Set(deployments.map((row) => row.worker_name));
+    if (app.worker_name) workerNames.add(app.worker_name);
+    for (const workerName of workerNames) await deleteUserWorker(env, workerName);
+    if (app.r2_bucket) await removeFileStorage(env, app);
+    const afterFiles = (await getAppIncludingArchived(env, app.id)) ?? app;
+    if (afterFiles.d1_id) await removeDatabase(env, afterFiles);
+    await deleteAppAssets(env, app.id);
+    const domains = await env.CONTROL_DB.prepare("SELECT cloudflare_id FROM app_domains WHERE app_id=? AND cloudflare_id IS NOT NULL")
+      .bind(app.id).all<{ cloudflare_id: string }>();
+    for (const domain of domains.results) await deleteCustomDomain(env, domain.cloudflare_id);
+    if (app.custom_domain_id) await deleteCustomDomain(env, app.custom_domain_id);
+    await audit(env, "system", "app.deleted", app.id, { slug: app.slug });
+    await env.CONTROL_DB.batch([
+      env.CONTROL_DB.prepare("DELETE FROM app_members WHERE app_id=?").bind(app.id),
+      env.CONTROL_DB.prepare("DELETE FROM app_secrets WHERE app_id=?").bind(app.id),
+      env.CONTROL_DB.prepare("DELETE FROM app_migrations WHERE app_id=?").bind(app.id),
+      env.CONTROL_DB.prepare("DELETE FROM deployments WHERE app_id=?").bind(app.id),
+      env.CONTROL_DB.prepare("DELETE FROM tokens WHERE app_id=?").bind(app.id),
+      env.CONTROL_DB.prepare("DELETE FROM apps WHERE id=?").bind(app.id),
+    ]);
+  } finally {
+    await releasePlatformLock(env, "domains", domainHolder).catch((error) => console.error("domain lock release failed", error));
+  }
+}
+
+async function handleAdoptResources(req: Request, env: Env, principal: Principal, app: AppRow): Promise<Response> {
+  if (!isPlatformOwner(principal)) return json({ error: "platform owner required" }, 403);
+  const body = await req.json().catch(() => null) as {
+    database?: { id?: string; name?: string };
+    files?: { bucket?: string };
+    bucket?: { name?: string };
+  } | null;
+  const bucketName = body?.files?.bucket ?? body?.bucket?.name;
+  if (!body || (!body.database && !bucketName)) return json({ error: "database or files.bucket is required" }, 400);
+  if (body.database && app.d1_id) return json({ error: "app already has a database" }, 409);
+  if (bucketName && app.r2_bucket) return json({ error: "app already has a bucket" }, 409);
+  let database: { uuid: string; name: string } | null = null;
+  let bucket: { name: string } | null = null;
+  try {
+    if (body.database) {
+      if (!body.database.id) return json({ error: "database.id is required" }, 400);
+      database = await getD1(env, body.database.id);
+      if (body.database.name && body.database.name !== database.name) return json({ error: "database name does not match id" }, 409);
     }
-    try {
-      const current = await getAppById(env, app.id);
-      if (!current) return json({ ok: true, deleted: app.slug });
-      const { results } = await env.CONTROL_DB.prepare(
-        "SELECT worker_name FROM deployments WHERE app_id=? AND worker_name IS NOT NULL",
-      ).bind(app.id).all<{ worker_name: string }>();
-      const workerNames = new Set(results.map((row) => row.worker_name));
-      if (current.worker_name) workerNames.add(current.worker_name);
-      for (const workerName of workerNames) await deleteUserWorker(env, workerName);
-      if (current.r2_bucket) await removeFileStorage(env, current);
-      const afterFiles = (await getAppById(env, app.id)) ?? current;
-      if (afterFiles.d1_id) await removeDatabase(env, afterFiles);
-      await deleteAppAssets(env, app.id);
-      if (current.custom_domain_id) await deleteCustomDomain(env, current.custom_domain_id);
-      await audit(env, principal.user.id, "app.deleted", app.id, { slug: app.slug });
-      await env.CONTROL_DB.batch([
-        env.CONTROL_DB.prepare("DELETE FROM app_members WHERE app_id=?").bind(app.id),
-        env.CONTROL_DB.prepare("DELETE FROM app_secrets WHERE app_id=?").bind(app.id),
-        env.CONTROL_DB.prepare("DELETE FROM app_migrations WHERE app_id=?").bind(app.id),
-        env.CONTROL_DB.prepare("DELETE FROM deployments WHERE app_id=?").bind(app.id),
-        env.CONTROL_DB.prepare("DELETE FROM tokens WHERE app_id=?").bind(app.id),
-        env.CONTROL_DB.prepare("DELETE FROM apps WHERE id=?").bind(app.id),
-      ]);
-      return json({ ok: true, deleted: app.slug });
-    } catch (error) {
-      return json({ error: `app deletion failed and can be retried: ${error instanceof Error ? error.message : error}` }, 502);
-    } finally {
-      await releasePlatformLock(env, "domains", domainHolder).catch((error) => console.error("domain lock release failed", error));
+    if (bucketName) bucket = await getR2Bucket(env, bucketName);
+    await env.CONTROL_DB.prepare(
+      `UPDATE apps SET
+       d1_id=COALESCE(?,d1_id),d1_name=COALESCE(?,d1_name),d1_adopted=CASE WHEN ? IS NULL THEN d1_adopted ELSE 1 END,
+       r2_bucket=COALESCE(?,r2_bucket),r2_adopted=CASE WHEN ? IS NULL THEN r2_adopted ELSE 1 END,updated_at=?
+       WHERE id=?`,
+    ).bind(database?.uuid ?? null, database?.name ?? null, database?.uuid ?? null, bucket?.name ?? null, bucket?.name ?? null, Date.now(), app.id).run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return json({ error: message.includes("UNIQUE") ? "resource is already attached to another app" : `resource adoption failed: ${message}` }, 409);
+  }
+  await audit(env, principal.user.id, "app.resources.adopted", app.id, { database, bucket });
+  return json({ app: publicApp((await getAppById(env, app.id))!) });
+}
+
+async function handleAddDomain(req: Request, env: Env, principal: Principal, app: AppRow): Promise<Response> {
+  if (!isPlatformOwner(principal)) return json({ error: "platform owner required" }, 403);
+  const body = await req.json().catch(() => null) as { hostname?: string } | null;
+  let hostname: string;
+  try {
+    hostname = normalizeAppDomain(body?.hostname ?? "");
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+  const now = Date.now();
+  try {
+    await env.CONTROL_DB.prepare(
+      "INSERT INTO app_domains (hostname,app_id,status,created_at,updated_at) VALUES (?,?,'pending',?,?)",
+    ).bind(hostname, app.id, now, now).run();
+  } catch {
+    const existing = await env.CONTROL_DB.prepare("SELECT app_id,status FROM app_domains WHERE hostname=?").bind(hostname).first<{ app_id: string; status: string }>();
+    if (existing?.app_id === app.id && existing.status === "active") return json({ hostname, status: "active" });
+    return json({ error: "domain is already claimed" }, 409);
+  }
+  try {
+    const domain = await attachCustomDomain(env, hostname);
+    await env.CONTROL_DB.prepare(
+      "UPDATE app_domains SET cloudflare_id=?,status='active',error=NULL,updated_at=? WHERE hostname=? AND app_id=?",
+    ).bind(domain.id, Date.now(), hostname, app.id).run();
+    await audit(env, principal.user.id, "app.domain.attached", app.id, { hostname });
+    return json({ hostname, status: "active" }, 201);
+  } catch (error) {
+    await env.CONTROL_DB.prepare("UPDATE app_domains SET status='error',error=?,updated_at=? WHERE hostname=?")
+      .bind(error instanceof Error ? error.message : String(error), Date.now(), hostname).run();
+    return json({ error: `domain attachment failed: ${error instanceof Error ? error.message : error}` }, 502);
+  }
+}
+
+async function handleDeleteDomain(env: Env, principal: Principal, app: AppRow, hostnameInput: string): Promise<Response> {
+  if (!isPlatformOwner(principal)) return json({ error: "platform owner required" }, 403);
+  let hostname: string;
+  try {
+    hostname = normalizeAppDomain(hostnameInput);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+  const row = await env.CONTROL_DB.prepare("SELECT cloudflare_id FROM app_domains WHERE hostname=? AND app_id=?")
+    .bind(hostname, app.id).first<{ cloudflare_id: string | null }>();
+  if (!row) return json({ error: "domain not found" }, 404);
+  await env.CONTROL_DB.prepare("UPDATE app_domains SET status='deleting',updated_at=? WHERE hostname=?").bind(Date.now(), hostname).run();
+  try {
+    if (row.cloudflare_id) await deleteCustomDomain(env, row.cloudflare_id);
+    await env.CONTROL_DB.prepare("DELETE FROM app_domains WHERE hostname=? AND app_id=?").bind(hostname, app.id).run();
+    await audit(env, principal.user.id, "app.domain.detached", app.id, { hostname });
+    return json({ ok: true });
+  } catch (error) {
+    await env.CONTROL_DB.prepare("UPDATE app_domains SET status='error',error=?,updated_at=? WHERE hostname=?")
+      .bind(error instanceof Error ? error.message : String(error), Date.now(), hostname).run();
+    return json({ error: `domain detachment failed: ${error instanceof Error ? error.message : error}` }, 502);
+  }
+}
+
+interface ReconcileInput {
+  sourceHash?: string;
+  app?: { name?: string; description?: string; visibility?: AppRow["visibility"]; domains?: string[] };
+  resources?: { database?: { id?: string; name?: string }; bucket?: { name?: string } };
+  deployment?: DeployInput;
+}
+
+async function handleReconcileApp(
+  req: Request,
+  env: Env,
+  principal: Principal,
+  slug: string,
+): Promise<Response> {
+  if (!isPlatformOwner(principal)) return json({ error: "platform owner required" }, 403);
+  if (!validSlug(slug)) return json({ error: "invalid app slug" }, 400);
+  if (req.method === "DELETE") {
+    const body = await req.json().catch(() => ({})) as { confirm?: string };
+    const app = await getAppBySlug(env, slug);
+    if (!app) return json({ ok: true, deleted: slug });
+    if (app.managed_by !== "git") return json({ error: "refusing to delete a manually managed app" }, 409);
+    if (body.confirm !== slug) return json({ error: `confirm deletion with {"confirm":"${slug}"}` }, 400);
+    return handleDestroyApp(new Request(req.url, { method: "DELETE", body: JSON.stringify(body) }), env, principal, app);
+  }
+  if (req.method !== "PUT") return json({ error: "method not allowed" }, 405);
+  const body = await req.json().catch(() => null) as ReconcileInput | null;
+  if (!body?.sourceHash || !/^[a-f0-9]{64}$/.test(body.sourceHash) || !body.deployment) {
+    return json({ error: "sourceHash and deployment are required" }, 400);
+  }
+  let app = await getAppBySlugIncludingArchived(env, slug);
+  if (app?.archived_at) {
+    if (Date.now() - app.archived_at >= RESOURCE_GRACE_MS) return json({ error: "app recovery window has expired" }, 410);
+    await env.CONTROL_DB.prepare(
+      "UPDATE apps SET archived_at=NULL,d1_delete_after=NULL,r2_delete_after=NULL,updated_at=? WHERE id=?",
+    ).bind(Date.now(), app.id).run();
+    await audit(env, principal.user.id, "app.restored", app.id, { source: "git reconciliation" });
+    app = await getAppById(env, app.id);
+  }
+  if (!app) {
+    const created = await handleCreateApp(
+      new Request(req.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          slug,
+          name: body.app?.name || slug,
+          description: body.app?.description || "",
+          visibility: body.app?.visibility || "team",
+        }),
+      }),
+      env,
+      principal,
+    );
+    if (!created.ok) return created;
+    app = await getAppBySlug(env, slug);
+    if (!app) return json({ error: "created app could not be loaded" }, 500);
+    await env.CONTROL_DB.prepare("UPDATE apps SET managed_by='git' WHERE id=?").bind(app.id).run();
+    app = (await getAppById(env, app.id))!;
+  } else if (app.managed_by !== "git") {
+    return json({ error: "slug belongs to a manually managed app" }, 409);
+  }
+
+  return withAppOperationLock(env, app.id, async () => {
+    const current = await getAppById(env, app!.id);
+    if (!current) return json({ error: "app not found" }, 404);
+    const visibility = body.app?.visibility ?? current.visibility;
+    if (!["private", "team", "public"].includes(visibility)) return json({ error: "invalid visibility" }, 400);
+    await env.CONTROL_DB.prepare(
+      "UPDATE apps SET name=?,description=?,visibility=?,updated_at=? WHERE id=?",
+    ).bind(
+      String(body.app?.name || current.name).trim().slice(0, 100),
+      String(body.app?.description ?? current.description).trim().slice(0, 500),
+      visibility,
+      Date.now(),
+      current.id,
+    ).run();
+
+    let refreshed = (await getAppById(env, current.id))!;
+    if (body.resources && ((!refreshed.d1_id && body.resources.database) || (!refreshed.r2_bucket && body.resources.bucket))) {
+      const adopted = await handleAdoptResources(
+        new Request(req.url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body.resources) }),
+        env,
+        principal,
+        refreshed,
+      );
+      if (!adopted.ok) return adopted;
+      refreshed = (await getAppById(env, current.id))!;
     }
+
+    if (body.app?.domains !== undefined) {
+      const desiredDomains = new Set(body.app.domains.map(normalizeAppDomain));
+      const domainRows = await env.CONTROL_DB.prepare("SELECT hostname FROM app_domains WHERE app_id=?").bind(current.id).all<{ hostname: string }>();
+      for (const hostname of desiredDomains) {
+        if (domainRows.results.some((row) => row.hostname === hostname)) continue;
+        const attached = await handleAddDomain(
+          new Request(req.url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hostname }) }),
+          env,
+          principal,
+          refreshed,
+        );
+        if (!attached.ok) return attached;
+      }
+      for (const { hostname } of domainRows.results) {
+        if (desiredDomains.has(hostname)) continue;
+        const detached = await handleDeleteDomain(env, principal, refreshed, hostname);
+        if (!detached.ok) return detached;
+      }
+    }
+
+    if (refreshed.source_hash === body.sourceHash) {
+      return json({ app: publicApp(refreshed), changed: false });
+    }
+    const deployed = await handleDeployLocked(
+      new Request(req.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body.deployment),
+      }),
+      env,
+      principal,
+      refreshed,
+    );
+    if (!deployed.ok) return deployed;
+    await env.CONTROL_DB.prepare("UPDATE apps SET source_hash=?,managed_by='git',updated_at=? WHERE id=?")
+      .bind(body.sourceHash, Date.now(), refreshed.id).run();
+    return json({ app: publicApp((await getAppById(env, refreshed.id))!), changed: true, deployment: await deployed.json() });
   });
 }
 
@@ -727,6 +989,28 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
   if (url.pathname === "/api/session" && req.method === "DELETE") return signOut(req, env);
   if (url.pathname === "/api/me" && req.method === "GET") return json({ user: principal.user });
   if (url.pathname === "/api/verify" && req.method === "GET") return json({ ok: true, user: principal.user, appId: principal.appId ?? null });
+  const reconcileMatch = url.pathname.match(/^\/api\/reconcile\/apps\/([^/]+)$/);
+  if (reconcileMatch) return handleReconcileApp(req, env, principal, decodeURIComponent(reconcileMatch[1]!));
+  if (url.pathname === "/api/archived" && req.method === "GET") {
+    const statement = isPlatformOwner(principal)
+      ? env.CONTROL_DB.prepare("SELECT * FROM apps WHERE archived_at IS NOT NULL ORDER BY archived_at DESC")
+      : env.CONTROL_DB.prepare("SELECT * FROM apps WHERE archived_at IS NOT NULL AND owner_id=? ORDER BY archived_at DESC").bind(principal.user.id);
+    const archived = await statement.all<AppRow>();
+    return json({ apps: archived.results.map((app) => ({ ...publicApp(app), archivedAt: app.archived_at, recoveryUntil: app.archived_at! + RESOURCE_GRACE_MS })) });
+  }
+  const restoreMatch = url.pathname.match(/^\/api\/archived\/([^/]+)\/restore$/);
+  if (restoreMatch && req.method === "POST") {
+    const app = await getAppIncludingArchived(env, decodeURIComponent(restoreMatch[1]!));
+    if (!app?.archived_at || !canDestroy(app, principal)) return json({ error: "app not found" }, 404);
+    const body = await req.json().catch(() => ({})) as { confirm?: string };
+    if (body.confirm !== app.slug) return json({ error: `confirm recovery with {"confirm":"${app.slug}"}` }, 400);
+    if (Date.now() - app.archived_at >= RESOURCE_GRACE_MS) return json({ error: "app recovery window has expired" }, 410);
+    await env.CONTROL_DB.prepare(
+      "UPDATE apps SET archived_at=NULL,d1_delete_after=NULL,r2_delete_after=NULL,updated_at=? WHERE id=?",
+    ).bind(Date.now(), app.id).run();
+    await audit(env, principal.user.id, "app.restored", app.id);
+    return json({ app: publicApp((await getAppById(env, app.id))!) });
+  }
   if (principal.appId) {
     const root = `/api/apps/${principal.appId}`;
     const scopedList = url.pathname === "/api/apps" && req.method === "GET";
@@ -847,9 +1131,23 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
       ...entry,
       detail: detail ? JSON.parse(detail) : null,
     }));
-    return json({ app: await publicAppFor(env, app, principal), deployments, secrets, audit });
+    const { results: domains } = await env.CONTROL_DB.prepare(
+      "SELECT hostname,status,error,created_at,updated_at FROM app_domains WHERE app_id=? ORDER BY hostname",
+    ).bind(app.id).all();
+    const { results: schedules } = await env.CONTROL_DB.prepare(
+      "SELECT id,expression,next_run_at,last_run_at,last_status,last_error FROM app_schedules WHERE app_id=? ORDER BY expression",
+    ).bind(app.id).all();
+    return json({ app: await publicAppFor(env, app, principal), deployments, secrets, domains, schedules, audit });
   }
   if (!(await canManage(env, app, principal))) return json({ error: "app not found" }, 404);
+  if (req.method !== "GET" && app.managed_by === "git" && !tail.startsWith("secrets/")) {
+    return json({ error: "app is managed by git; update its apps/ directory and run reconciliation" }, 409);
+  }
+  if (tail === "adopt" && req.method === "POST") return handleAdoptResources(req, env, principal, app);
+  if (tail === "domains" && req.method === "POST") return handleAddDomain(req, env, principal, app);
+  if (tail.startsWith("domains/") && req.method === "DELETE") {
+    return handleDeleteDomain(env, principal, app, decodeURIComponent(tail.slice("domains/".length)));
+  }
   if (!tail && req.method === "DELETE") return handleDestroyApp(req, env, principal, app);
   if (tail === "prune" && req.method === "POST") return handlePruneApp(req, env, principal, app);
   if (tail === "deployments" && req.method === "POST") return handleDeploy(req, env, principal, app);
@@ -907,7 +1205,7 @@ async function sweepUnusedResources(env: Env): Promise<void> {
         version: 1,
         assets: false,
         worker: false,
-        capabilities: { database: false, files: false, secrets: [], network: [] },
+        capabilities: { database: false, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
       } satisfies ResolvedManifest;
       if (!manifest.capabilities.files && app.r2_bucket && app.r2_delete_after && app.r2_delete_after <= Date.now()) {
         await removeFileStorage(env, app);
@@ -925,6 +1223,25 @@ async function sweepUnusedResources(env: Env): Promise<void> {
   }
 }
 
+async function sweepArchivedApps(env: Env, now = Date.now()): Promise<void> {
+  const archived = await env.CONTROL_DB.prepare(
+    "SELECT * FROM apps WHERE archived_at IS NOT NULL AND archived_at<=? ORDER BY archived_at LIMIT 5",
+  ).bind(now - RESOURCE_GRACE_MS).all<AppRow>();
+  for (const app of archived.results) {
+    const lockName = `app-operation:${app.id}`;
+    const holder = `destroy-${randomHex(8)}`;
+    if (!(await acquirePlatformLock(env, lockName, holder, 60 * 60_000))) continue;
+    try {
+      const current = await getAppIncludingArchived(env, app.id);
+      if (current?.archived_at && current.archived_at <= Date.now() - RESOURCE_GRACE_MS) await purgeArchivedApp(env, current);
+    } catch (error) {
+      console.error("archived app purge failed", { appId: app.id, error });
+    } finally {
+      await releasePlatformLock(env, lockName, holder).catch((error) => console.error("destroy lock release failed", error));
+    }
+  }
+}
+
 async function serveAsset(req: Request, env: Env, key: string): Promise<Response | null> {
   const object = await env.ASSETS.get(key);
   if (!object) return null;
@@ -937,17 +1254,30 @@ async function serveAsset(req: Request, env: Env, key: string): Promise<Response
   return new Response(req.method === "HEAD" ? null : object.body, { headers });
 }
 
+async function appForHostname(env: Env, hostname: string): Promise<AppRow | null> {
+  const suffix = ".apps.myslop.app";
+  if (hostname.endsWith(suffix) && hostname !== `apps.myslop.app`) {
+    const slug = hostname.slice(0, -suffix.length);
+    return validSlug(slug) ? getAppBySlug(env, slug) : null;
+  }
+  return env.CONTROL_DB.prepare(
+    `SELECT a.* FROM app_domains d JOIN apps a ON a.id=d.app_id
+     WHERE d.hostname=? AND d.status='active' AND a.archived_at IS NULL`,
+  ).bind(hostname).first<AppRow>();
+}
+
 async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Response> {
-  const slug = url.hostname.slice(0, -".apps.myslop.app".length);
-  if (!validSlug(slug)) return new Response("not found\n", { status: 404 });
-  const app = await getAppBySlug(env, slug);
+  if (url.pathname === "/__email" || url.pathname === "/__scheduled") return new Response("not found\n", { status: 404 });
+  const app = await appForHostname(env, url.hostname);
   if (!app || !app.active_version) return new Response("app not found\n", { status: 404 });
-  const user = await getSessionUser(req, env);
+  const user = app.visibility === "public" ? null : await getSessionUser(req, env);
   if (!(await canView(env, app, user))) {
+    const wantsJson = req.headers.get("accept")?.includes("application/json") || req.headers.has("authorization");
+    if (wantsJson) return json({ error: "unauthorized" }, 401);
     const returnTo = encodeURIComponent(url.toString());
     return Response.redirect(`https://apps.myslop.app/?returnTo=${returnTo}`, 302);
   }
-  if (user && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+  if (app.visibility !== "public" && user && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
     const origin = req.headers.get("origin");
     if (origin !== url.origin) return new Response("bad origin\n", { status: 403 });
   }
@@ -965,15 +1295,18 @@ async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Respo
   if (deployment.worker_key && deployment.worker_name) {
     const headers = new Headers(req.headers);
     for (const name of [...headers.keys()]) {
-      if (name.toLowerCase().startsWith("x-myslop-") || name.toLowerCase() === "authorization" || name.toLowerCase() === "cookie") {
+      const lower = name.toLowerCase();
+      if (lower.startsWith("x-myslop-") || (app.visibility !== "public" && (lower === "authorization" || lower === "cookie"))) {
         headers.delete(name);
       }
     }
-    headers.set("x-myslop-app-id", app.id);
-    if (user) {
-      headers.set("x-myslop-user-id", user.id);
-      if (user.email) headers.set("x-myslop-user-email", user.email);
-      if (user.name) headers.set("x-myslop-user-name", user.name);
+    if (app.visibility !== "public") {
+      headers.set("x-myslop-app-id", app.id);
+      if (user) {
+        headers.set("x-myslop-user-id", user.id);
+        if (user.email) headers.set("x-myslop-user-email", user.email);
+        if (user.name) headers.set("x-myslop-user-name", user.name);
+      }
     }
     const manifest = parseResolvedManifest(JSON.parse(deployment.manifest_json));
     const worker = env.DISPATCHER.get(deployment.worker_name, {}, {
@@ -981,7 +1314,7 @@ async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Respo
       outbound: { policy: { appId: app.id, hosts: manifest.capabilities.network } },
     });
     const response = await worker.fetch(new Request(req, { headers }));
-    if (response.status !== 404 || req.method !== "GET") return withSecurityHeaders(response);
+    if (response.status !== 404 || req.method !== "GET") return withSecurityHeaders(response, app.visibility === "public");
   }
 
   if (req.method === "GET" && !requestedPath.split("/").pop()?.includes(".")) {
@@ -998,9 +1331,9 @@ function decodedBase64(value: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-function withSecurityHeaders(response: Response): Response {
+function withSecurityHeaders(response: Response, preserveCookies = false): Response {
   const result = new Response(response.body, response);
-  result.headers.delete("set-cookie");
+  if (!preserveCookies) result.headers.delete("set-cookie");
   result.headers.set("x-content-type-options", "nosniff");
   result.headers.set("referrer-policy", "same-origin");
   return result;
@@ -1009,9 +1342,7 @@ function withSecurityHeaders(response: Response): Response {
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
-    if (url.hostname.endsWith(".apps.myslop.app") && url.hostname !== "apps.myslop.app") {
-      return handleAppRequest(req, env, url);
-    }
+    if (url.hostname !== "apps.myslop.app") return handleAppRequest(req, env, url);
     if (url.pathname.startsWith("/api/")) return handleApi(req, env, url, ctx);
     if (url.pathname === "/skill.md") {
       return new Response(skillMd, { headers: { "content-type": "text/markdown; charset=utf-8" } });
@@ -1034,7 +1365,16 @@ export default {
     }
     return new Response("not found\n", { status: 404 });
   },
+  async email(message, env) {
+    await acceptEmail(message, env);
+  },
   async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(Promise.all([sweepUnusedResources(env), sweepOrphanResources(env)]).then(() => undefined));
+    ctx.waitUntil(Promise.all([
+      dispatchDueSchedules(env),
+      retryEmailDeliveries(env),
+      sweepUnusedResources(env),
+      sweepArchivedApps(env),
+      sweepOrphanResources(env),
+    ]).then(() => undefined));
   },
 } satisfies ExportedHandler<Env>;
