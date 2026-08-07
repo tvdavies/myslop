@@ -18,11 +18,14 @@ jobs:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # dashboard-assets.generated.ts contains Bun's minified bundler runtime.
+          bun-version: 1.3.13
       - run: bun install --frozen-lockfile
       - run: bun run check
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run --cwd platform test:browser
       - name: Verify generated files
-        run: git diff --exit-code -- platform/src/cli.generated.ts platform/src/setup-sh.generated.ts apps/files/plugins apps/mail/plugins
+        run: git diff --exit-code -- platform/src/cli.generated.ts platform/src/setup-sh.generated.ts platform/src/dashboard-assets.generated.ts apps/files/plugins apps/mail/plugins
       - name: Verify source histories
         run: |
           git log --follow --oneline -- platform/src/index.ts >/dev/null

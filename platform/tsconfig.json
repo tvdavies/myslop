@@ -9,5 +9,6 @@
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "cli/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "cli/**/*.ts", "test/**/*.ts"],
+  "exclude": ["src/dashboard/**/*", "test/dashboard-ui.test.ts"]
 }
