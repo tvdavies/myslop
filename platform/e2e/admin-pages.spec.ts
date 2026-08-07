@@ -33,9 +33,15 @@ function json(route: Route, value: unknown, status = 200) {
   return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(value) });
 }
 
-async function mock(page: Page) {
+async function mock(page: Page, options: {
+  onRequest?: (path: string) => void;
+  delayPath?: string;
+  delayMs?: number;
+} = {}) {
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    options.onRequest?.(path);
+    if (path === options.delayPath) await new Promise((resolve) => setTimeout(resolve, options.delayMs || 0));
     if (path === "/api/me") {
       return json(route, {
         user: { id: "user-1", email: "tom@example.com", name: "Tom Davies", picture: null, platform_role: "owner" },
@@ -104,6 +110,34 @@ test("groups page renders group rows and member actions", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator(".mobile-directory .mobile-admin-row")).toHaveCount(1);
   await axeClean(page);
+});
+
+test("shows a table-shaped loading state for slower directory requests", async ({ page }) => {
+  const groupsPath = `/api/teams/${team.id}/groups`;
+  await mock(page, { delayPath: groupsPath, delayMs: 500 });
+  await page.goto(`/team/groups?teamId=${team.id}`);
+
+  const loading = page.locator(".table-loading");
+  await expect(loading).toBeVisible();
+  await expect(loading.locator("th")).toHaveText(["Group", "Members", "Apps", "Updated", "Actions"]);
+  await expect(loading.locator('.desktop-directory [data-slot="skeleton"]')).toHaveCount(35);
+  await expect(page.getByRole("cell", { name: "Sales Commercial team" })).toBeVisible();
+  await expect(loading).toHaveCount(0);
+});
+
+test("reuses recent table data when navigating back to a page", async ({ page }) => {
+  const requests = new Map<string, number>();
+  await mock(page, { onRequest: (path) => requests.set(path, (requests.get(path) || 0) + 1) });
+  await page.goto(`/team/groups?teamId=${team.id}`);
+
+  await expect(page.getByRole("cell", { name: "Sales Commercial team" })).toBeVisible();
+  await page.getByRole("link", { name: "Members" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Members" })).toBeVisible();
+  await page.getByRole("link", { name: "Groups" }).click();
+  await expect(page.getByRole("cell", { name: "Sales Commercial team" })).toBeVisible();
+
+  expect(requests.get(`/api/teams/${team.id}/groups`)).toBe(1);
+  await expect(page.locator(".table-loading")).toHaveCount(0);
 });
 
 test("tokens page renders scope labels for global and app-scoped tokens", async ({ page }) => {

@@ -2,7 +2,7 @@ import { Info } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
-import { RouteError, RouteLoading } from "@/components/feedback/route-state";
+import { RouteError, TableLoading } from "@/components/feedback/route-state";
 import { PageHeader } from "@/components/page-header";
 import { Panel, PanelHeader } from "@/components/panel";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -71,7 +71,7 @@ export function MembersPage() {
   const [updating, setUpdating] = React.useState<string | null>(null);
   useDocumentTitle("Members");
 
-  const resource = useRouteResource(`${dashboard.teamId}:${revision}`, (signal) =>
+  const resource = useRouteResource(`members:${dashboard.teamId}:${revision}`, (signal) =>
     apiRequest<MembersResponse>(`/api/teams/${encodeURIComponent(dashboard.teamId)}/members`, { signal }),
   );
 
@@ -121,7 +121,14 @@ export function MembersPage() {
         title="Members"
         description="Team membership controls who can receive app and group access."
       />
-      {resource.status === "loading" ? <RouteLoading label="Loading members…" /> : null}
+      {resource.status === "loading" ? (
+        <TableLoading
+          label="Loading members…"
+          title="Team members"
+          headers={["Member", "Team role", "Status", "Joined"]}
+          hasActions={false}
+        />
+      ) : null}
       {resource.status === "error" ? <RouteError message={resource.error} retry={resource.retry} /> : null}
       {resource.status === "ready" ? (
         <>

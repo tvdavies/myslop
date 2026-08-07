@@ -173,7 +173,26 @@ test("keeps access and modification audiences explicit on app settings", async (
   await expect(page.getByRole("heading", { level: 3, name: "Who can modify" })).toBeVisible();
   await expect(page.getByText("Primary owner: Tom Davies")).toBeVisible();
   await expect(page.getByText("Editor groups: Sales")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Danger" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Danger zone" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Danger zone" })).toBeVisible();
+  await expect(page.locator(".danger-action-row")).toHaveCount(2);
+
+  const [pruneButton, deleteButton] = await Promise.all([
+    page.getByRole("button", { name: "Prune resources" }).boundingBox(),
+    page.getByRole("button", { name: "Delete app" }).boundingBox(),
+  ]);
+  expect(pruneButton).not.toBeNull();
+  expect(deleteButton).not.toBeNull();
+  expect(Math.abs(pruneButton!.x + pruneButton!.width - deleteButton!.x - deleteButton!.width)).toBeLessThanOrEqual(1);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const [mobilePruneButton, mobileDeleteButton] = await Promise.all([
+    page.getByRole("button", { name: "Prune resources" }).boundingBox(),
+    page.getByRole("button", { name: "Delete app" }).boundingBox(),
+  ]);
+  expect(mobilePruneButton).not.toBeNull();
+  expect(mobileDeleteButton).not.toBeNull();
+  expect(Math.abs(mobilePruneButton!.x - mobileDeleteButton!.x)).toBeLessThanOrEqual(1);
 
   await expectNoPageOverflow(page);
   await expectNoSeriousAccessibilityViolations(page);

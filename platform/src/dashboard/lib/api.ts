@@ -1,3 +1,5 @@
+import { clearRouteResourceCache } from "@/lib/route-resource-cache";
+
 export class ApiError extends Error {
   readonly status: number;
   readonly body: Record<string, unknown>;
@@ -33,9 +35,14 @@ export async function apiRequest<T>(
   });
   const body = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) {
-    if (response.status === 401) unauthorizedHandler?.();
+    if (response.status === 401) {
+      clearRouteResourceCache();
+      unauthorizedHandler?.();
+    }
     throw new ApiError(String(body.error || response.statusText || "Request failed"), response.status, body);
   }
+  const method = (options.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") clearRouteResourceCache();
   return body as T;
 }
 

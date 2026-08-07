@@ -13,6 +13,11 @@ import {
 } from "../src/dashboard/lib/folders";
 import { selectActiveTeamId, shouldFocusMainRoute } from "../src/dashboard/lib/dashboard-state";
 import { relativeTime, slugify } from "../src/dashboard/lib/format";
+import {
+  clearRouteResourceCache,
+  readRouteResourceCache,
+  writeRouteResourceCache,
+} from "../src/dashboard/lib/route-resource-cache";
 import { resolveTheme } from "../src/dashboard/theme/theme-provider";
 import type { FolderSummary } from "../src/dashboard/types/api";
 
@@ -118,6 +123,14 @@ describe("dashboard pure helpers", () => {
     ];
     expect(folderPath(cyclic, cyclic[0]!)).toBe("Y / X");
     expect(nestedFolders(cyclic)).toEqual([]);
+  });
+
+  test("keeps recent route data in a short-lived session cache", () => {
+    clearRouteResourceCache();
+    writeRouteResourceCache("members", { count: 2 }, 1_000);
+    expect(readRouteResourceCache<{ count: number }>("members", 1_001)).toEqual({ count: 2 });
+    expect(readRouteResourceCache("members", 21_001)).toBeUndefined();
+    clearRouteResourceCache();
   });
 
   test("resolves system themes and formats stable labels", () => {

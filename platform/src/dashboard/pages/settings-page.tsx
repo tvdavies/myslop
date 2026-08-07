@@ -21,13 +21,21 @@ import { ResourcesSection } from "@/settings/resources-section";
 import { SecretsSection } from "@/settings/secrets-section";
 import type { AppDetailResponse, GroupsResponse, MembersResponse } from "@/types/api";
 
-const sections = ["Overview", "Access", "Resources", "Deployments", "Secrets", "Activity", "Danger"] as const;
+const sections = [
+  { id: "overview", label: "Overview" },
+  { id: "access", label: "Access" },
+  { id: "resources", label: "Resources" },
+  { id: "deployments", label: "Deployments" },
+  { id: "secrets", label: "Secrets" },
+  { id: "activity", label: "Activity" },
+  { id: "danger", label: "Danger zone" },
+] as const;
 
 export function SettingsPage({ appId, hash }: { appId: string; hash: string }) {
   const dashboard = useDashboard();
   const [revision, setRevision] = React.useState(0);
   const [confirmation, setConfirmation] = React.useState<AppConfirmation | null>(null);
-  const resource = useRouteResource(`${appId}:${revision}`, async (signal) => {
+  const resource = useRouteResource(`settings:${appId}:${revision}`, async (signal) => {
     const detail = await apiRequest<AppDetailResponse>(`/api/apps/${encodeURIComponent(appId)}`, { signal });
     let members: MembersResponse = { members: [], canAdmin: false };
     let groups: GroupsResponse = { groups: [], canAdmin: false };
@@ -51,13 +59,13 @@ export function SettingsPage({ appId, hash }: { appId: string; hash: string }) {
   React.useEffect(() => {
     if (resource.status !== "ready") return;
     const sectionId = hash.slice(1);
-    if (sections.some((section) => section.toLowerCase() === sectionId)) requestAnimationFrame(() => document.getElementById(sectionId)?.scrollIntoView());
+    if (sections.some((section) => section.id === sectionId)) requestAnimationFrame(() => document.getElementById(sectionId)?.scrollIntoView());
   }, [resource.status, hash]);
 
   if (resource.status === "loading") return <div className="content-width"><RouteLoading label="Loading app settings…" /></div>;
   if (resource.status === "error") return <div className="content-width"><RouteError message={resource.error} retry={resource.retry} /></div>;
   const { app } = resource.data.detail;
-  const activeSection = sections.some((section) => `#${section.toLowerCase()}` === hash) ? hash.slice(1) : "overview";
+  const activeSection = sections.some((section) => `#${section.id}` === hash) ? hash.slice(1) : "overview";
   const backHref = dashboard.href(app.folderId ? `/folders/${encodeURIComponent(app.folderId)}` : "/");
   async function handleConfirmComplete(deleted: boolean) {
     setConfirmation(null);
@@ -99,19 +107,16 @@ export function SettingsPage({ appId, hash }: { appId: string; hash: string }) {
       ) : null}
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Settings sections">
-          {sections.map((section) => {
-            const id = section.toLowerCase();
-            return (
-              <a
-                key={id}
-                href={`#${id}`}
-                aria-current={activeSection === id ? "location" : undefined}
-                className={cn(activeSection === id && "is-active", id === "danger" && "is-danger")}
-              >
-                {section}
-              </a>
-            );
-          })}
+          {sections.map((section) => (
+            <a
+              key={section.id}
+              href={`#${section.id}`}
+              aria-current={activeSection === section.id ? "location" : undefined}
+              className={cn(activeSection === section.id && "is-active", section.id === "danger" && "is-danger")}
+            >
+              {section.label}
+            </a>
+          ))}
         </nav>
         <div className="settings-content">
           <OverviewSection detail={resource.data.detail} refresh={refresh} />

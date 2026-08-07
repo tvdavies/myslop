@@ -21,7 +21,7 @@ export function GroupMembersDialog({ open, onOpenChange, group, canAdmin, onSave
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
   const [busy, setBusy] = React.useState(false);
   const resource = useRouteResource(
-    open && group ? `${dashboard.teamId}:${group.id}` : "closed",
+    open && group ? `group-members:${dashboard.teamId}:${group.id}` : "group-members:closed",
     async (signal) => {
       if (!open || !group) return null;
       const [members, assigned] = await Promise.all([
