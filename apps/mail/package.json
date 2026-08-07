@@ -1,0 +1,20 @@
+{
+  "name": "myslop-mail",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "gen": "bun scripts/gen-setup.ts",
+    "dev": "bun scripts/gen-setup.ts && bunx wrangler dev",
+    "deploy": "bun scripts/gen-setup.ts && bunx wrangler deploy"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "postal-mime": "^2.7.5"
+  }
+}

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>temp-email skill · mail.myslop.app</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23374151'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' font-family='sans-serif' fill='%23fff'%3E%40%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f8f9fa; --panel: #fff; --border: #e2e5e9; --text: #1f2328;
+    --dim: #6b7280; --accent: #2563eb; --code-bg: #f3f4f6;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 15px; line-height: 1.6; }
+  code, pre, .mono { font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 32px 24px 80px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .logo { font-weight: 600; font-size: 15px; }
+  .logo .muted { color: var(--dim); font-weight: 400; }
+  header a { color: var(--dim); text-decoration: none; font-size: 13px; }
+  header a:hover { color: var(--text); }
+  h1 { font-size: 26px; margin: 20px 0 6px; font-weight: 650; }
+  .lede { color: var(--dim); margin-bottom: 26px; }
+  h2 { font-size: 15px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.7px; color: var(--dim); margin: 34px 0 12px; }
+  p { margin: 0 0 12px; }
+  a { color: var(--accent); }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; }
+  .card .dim { color: var(--dim); font-size: 13.5px; }
+  .cmd { position: relative; background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 11px 44px 11px 13px; margin: 8px 0; font-size: 13px; overflow-x: auto; white-space: pre; }
+  .cmd button { position: absolute; top: 7px; right: 7px; font: inherit; font-size: 11px; cursor: pointer; border: 1px solid var(--border); background: var(--panel); color: var(--dim); border-radius: 5px; padding: 2px 8px; }
+  .cmd button:hover { color: var(--text); }
+  details { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0; }
+  summary { cursor: pointer; padding: 13px 18px; font-weight: 500; list-style: none; display: flex; align-items: center; gap: 8px; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸"; color: var(--dim); }
+  details[open] summary::before { content: "▾"; }
+  .raw { border-top: 1px solid var(--border); }
+  .raw pre { padding: 16px 18px; font-size: 12.5px; line-height: 1.55; overflow-x: auto; white-space: pre; color: #24292f; }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+  .badge { font-size: 12px; color: var(--dim); border: 1px solid var(--border); background: var(--panel); border-radius: 99px; padding: 3px 11px; }
+  footer { margin-top: 40px; color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="logo">mail<span class="muted">.myslop.app</span></span>
+    <a href="/dashboard">Dashboard →</a>
+  </header>
+
+  <h1>The <span class="mono">temp-email</span> skill</h1>
+  <p class="lede">An agent skill that creates disposable <span class="mono">@myslop.app</span> inboxes and waits for mail — verification links, magic links, OTP codes. This is exactly what gets installed — read it before you do.</p>
+
+  <div class="badges">
+    <span class="badge">Any <span class="mono">@myslop.app</span> address works</span>
+    <span class="badge">Long-polls for arriving mail</span>
+    <span class="badge">Uses your own API token</span>
+  </div>
+
+  <h2>What it does</h2>
+  <p>When your agent hits a sign-up or verification flow that needs a real inbox, this skill tells it how to pick an <span class="mono">@myslop.app</span> address, wait for the message with your API token, and pull out the verification link or OTP. Addresses are owned by your account (first to read or claim a name owns it), so mail stays private to you. It only ever calls <span class="mono">mail.myslop.app</span> with a token you minted.</p>
+
+  <h2>Install</h2>
+
+  <div class="card">
+    <h3>Claude Code plugin (recommended)</h3>
+    <p class="dim">Adds this repo as a plugin marketplace, then installs the skill. Updatable with one command later.</p>
+    <div class="cmd" id="cmd-market">/plugin marketplace add tvdavies/myslop-mail<button data-copy="cmd-market">Copy</button></div>
+    <div class="cmd" id="cmd-install">/plugin install temp-email@myslop-mail<button data-copy="cmd-install">Copy</button></div>
+  </div>
+
+  <div class="card">
+    <h3>Manual (any agent)</h3>
+    <p class="dim">Drop the file into your skills directory. Works for Claude Code and anything that reads <span class="mono">SKILL.md</span> files.</p>
+    <div class="cmd" id="cmd-manual">mkdir -p ~/.claude/skills/temp-email
+curl -fsS https://mail.myslop.app/skill.md \
+  -o ~/.claude/skills/temp-email/SKILL.md<button data-copy="cmd-manual">Copy</button></div>
+  </div>
+
+  <div class="card">
+    <h3>Point an agent at it</h3>
+    <p class="dim">Or just paste this to any capable agent:</p>
+    <div class="cmd" id="cmd-agent">Install the skill at https://mail.myslop.app/skill.md
+into ~/.claude/skills/temp-email/SKILL.md, then follow it.<button data-copy="cmd-agent">Copy</button></div>
+  </div>
+
+  <p class="dim">First use will prompt you to authenticate — the skill runs <span class="mono">curl -fsS https://mail.myslop.app/setup.sh | bash</span>, which opens a page that mints your token. See <a href="/setup.sh">setup.sh</a> before running it.</p>
+
+  <h2>The skill file</h2>
+  <details open>
+    <summary>SKILL.md (raw &mdash; served at <span class="mono">/skill.md</span>)</summary>
+    <div class="raw"><pre>__SKILL_MD__</pre></div>
+  </details>
+
+  <footer>
+    Source: <a href="https://github.com/tvdavies/myslop-mail">github.com/tvdavies/myslop-mail</a>
+  </footer>
+</div>
+<script>
+  for (const btn of document.querySelectorAll("[data-copy]")) {
+    btn.addEventListener("click", async () => {
+      const el = document.getElementById(btn.dataset.copy);
+      const text = el.childNodes[0].textContent.trim();
+      await navigator.clipboard.writeText(text);
+      const old = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(() => (btn.textContent = old), 1500);
+    });
+  }
+</script>
+</body>
+</html>

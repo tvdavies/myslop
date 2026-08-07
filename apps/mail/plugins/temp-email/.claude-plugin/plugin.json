@@ -1,0 +1,10 @@
+{
+  "name": "temp-email",
+  "description": "Create a temporary email address on @myslop.app and wait for messages — verification links, magic links, OTP codes.",
+  "version": "0.1.0",
+  "author": { "name": "Tom Davies" },
+  "homepage": "https://mail.myslop.app/skill",
+  "repository": "https://github.com/tvdavies/myslop-mail",
+  "license": "MIT",
+  "keywords": ["email", "otp", "verification", "magic-link", "testing"]
+}

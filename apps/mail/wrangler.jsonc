@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "myslop-mail",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": false,
+  "routes": [{ "pattern": "mail.myslop.app", "custom_domain": true }],
+  "r2_buckets": [{ "binding": "MAIL", "bucket_name": "myslop-mail" }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "myslop-mail",
+      "database_id": "acd3be93-eea1-46ee-9953-7b4311191f26"
+    }
+  ],
+  "rules": [{ "type": "Text", "globs": ["**/*.html", "**/*.md"], "fallthrough": false }],
+  "durable_objects": {
+    "bindings": [{ "name": "INBOX_HUB", "class_name": "InboxHub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["InboxHub"] }],
+  "triggers": { "crons": ["17 3 * * *"] }
+}
