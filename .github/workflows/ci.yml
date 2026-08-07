@@ -21,6 +21,8 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run check
+      - name: Verify generated files
+        run: git diff --exit-code -- platform/src/cli.generated.ts platform/src/setup-sh.generated.ts apps/files/plugins apps/mail/plugins
       - name: Verify source histories
         run: |
           git log --follow --oneline -- platform/src/index.ts >/dev/null

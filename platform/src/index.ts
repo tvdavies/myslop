@@ -456,6 +456,7 @@ async function handleDeployLocked(req: Request, env: Env, principal: Principal, 
     return json({ error: "deployment contents do not match the resolved manifest" }, 400);
   }
   if (manifest.capabilities.email) {
+    if (!isPlatformOwner(principal)) return json({ error: "platform owner required for email capability" }, 403);
     const existing = await env.CONTROL_DB.prepare(
       `SELECT a.slug FROM apps a JOIN deployments d ON d.app_id=a.id AND d.version=a.active_version AND d.status='active'
        WHERE a.id!=? AND a.archived_at IS NULL AND json_extract(d.manifest_json,'$.capabilities.email')=1 LIMIT 1`,
@@ -1266,6 +1267,25 @@ async function appForHostname(env: Env, hostname: string): Promise<AppRow | null
   ).bind(hostname).first<AppRow>();
 }
 
+export function appRequestHeaders(req: Request, app: AppRow, user: User | null): Headers {
+  const headers = new Headers(req.headers);
+  for (const name of [...headers.keys()]) {
+    const lower = name.toLowerCase();
+    if (lower.startsWith("x-myslop-") || (app.visibility !== "public" && (lower === "authorization" || lower === "cookie"))) {
+      headers.delete(name);
+    }
+  }
+  if (app.visibility !== "public") {
+    headers.set("x-myslop-app-id", app.id);
+    if (user) {
+      headers.set("x-myslop-user-id", user.id);
+      if (user.email) headers.set("x-myslop-user-email", user.email);
+      if (user.name) headers.set("x-myslop-user-name", user.name);
+    }
+  }
+  return headers;
+}
+
 async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/__email" || url.pathname === "/__scheduled") return new Response("not found\n", { status: 404 });
   const app = await appForHostname(env, url.hostname);
@@ -1293,21 +1313,7 @@ async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Respo
   }
 
   if (deployment.worker_key && deployment.worker_name) {
-    const headers = new Headers(req.headers);
-    for (const name of [...headers.keys()]) {
-      const lower = name.toLowerCase();
-      if (lower.startsWith("x-myslop-") || (app.visibility !== "public" && (lower === "authorization" || lower === "cookie"))) {
-        headers.delete(name);
-      }
-    }
-    if (app.visibility !== "public") {
-      headers.set("x-myslop-app-id", app.id);
-      if (user) {
-        headers.set("x-myslop-user-id", user.id);
-        if (user.email) headers.set("x-myslop-user-email", user.email);
-        if (user.name) headers.set("x-myslop-user-name", user.name);
-      }
-    }
+    const headers = appRequestHeaders(req, app, user);
     const manifest = parseResolvedManifest(JSON.parse(deployment.manifest_json));
     const worker = env.DISPATCHER.get(deployment.worker_name, {}, {
       limits: { cpuMs: 10_000, subRequests: 1_000 },

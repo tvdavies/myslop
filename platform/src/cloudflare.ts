@@ -132,7 +132,6 @@ export async function uploadUserWorker(env: Env, options: WorkerUploadOptions): 
       type: "durable_object_namespace",
       name: durableObject.binding,
       class_name: durableObject.className,
-      script_name: options.workerName,
     });
   }
   for (const secret of secrets) {

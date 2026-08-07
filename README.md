@@ -39,7 +39,7 @@ Each direct child of `apps/` is one platform app. Its `myslop.json` declares app
 
 Deleting a directory does not silently delete its production app. A git-managed app may only be destroyed when the same change adds an exact active confirmation to `apps/DELETIONS.md`.
 
-Secrets are declarations, not repository values. CI fails when a declared secret has not already been provisioned on the platform.
+Secrets are declarations, not repository values. CI fails when a declared secret has not already been provisioned on the platform. Production deployment is manual and scoped (`platform`, `apps`, or `all`); alias reconciliation is a separate `apply_domains` cutover switch and can target Files or Mail independently.
 
 ## Deployment safety
 

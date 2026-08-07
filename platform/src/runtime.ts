@@ -195,16 +195,24 @@ export async function acceptEmail(message: ForwardableEmailMessage, env: Env): P
   const id = crypto.randomUUID();
   const spoolKey = `pending/${id}.eml`;
   const now = Date.now();
-  await env.MAIL_SPOOL.put(spoolKey, message.raw);
+  const messageId = message.headers.get("message-id") ?? "";
+  await env.MAIL_SPOOL.put(spoolKey, message.raw, {
+    customMetadata: {
+      sender: message.from,
+      recipient: message.to,
+      messageId,
+      appId: app?.app_id ?? "",
+    },
+  });
   try {
     await env.CONTROL_DB.prepare(
       `INSERT INTO email_deliveries
        (id,app_id,sender,recipient,spool_key,message_id,status,next_attempt_at,created_at,updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    ).bind(id, app?.app_id ?? null, message.from, message.to, spoolKey, message.headers.get("message-id"), "pending", now, now, now).run();
+    ).bind(id, app?.app_id ?? null, message.from, message.to, spoolKey, messageId || null, "pending", now, now, now).run();
   } catch (error) {
-    await env.MAIL_SPOOL.delete(spoolKey);
-    throw error;
+    console.error("email delivery indexing failed; spool recovery will retry", { id, error });
+    return "spooled";
   }
   if (!app) return "spooled";
   const status = await deliverEmail(env, { ...app, id, sender: message.from, recipient: message.to, spool_key: spoolKey, attempts: 0 }, now);
@@ -215,7 +223,26 @@ export async function acceptEmail(message: ForwardableEmailMessage, env: Env): P
   return status === "delivered" ? "delivered" : "spooled";
 }
 
+async function recoverUnindexedEmailSpool(env: Env, now: number): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    const listed = await env.MAIL_SPOOL.list({ prefix: "pending/", cursor, include: ["customMetadata"], limit: 100 });
+    for (const object of listed.objects) {
+      const id = object.key.slice("pending/".length).replace(/\.eml$/, "");
+      const metadata = object.customMetadata;
+      if (!id || !metadata?.sender || !metadata.recipient) continue;
+      await env.CONTROL_DB.prepare(
+        `INSERT OR IGNORE INTO email_deliveries
+         (id,app_id,sender,recipient,spool_key,message_id,status,next_attempt_at,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      ).bind(id, metadata.appId || null, metadata.sender, metadata.recipient, object.key, metadata.messageId || null, "pending", now, object.uploaded.getTime(), now).run();
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+}
+
 export async function retryEmailDeliveries(env: Env, now = Date.now()): Promise<void> {
+  await recoverUnindexedEmailSpool(env, now);
   const rows = await env.CONTROL_DB.prepare(
     `SELECT e.id,e.app_id,e.sender,e.recipient,e.spool_key,e.attempts,a.slug,a.active_version,d.worker_name,d.manifest_json
      FROM email_deliveries e

@@ -1,0 +1,66 @@
+import { describe, expect, test } from "bun:test";
+import { appRequestHeaders } from "../src/index";
+import type { AppRow, User } from "../src/types";
+
+function app(visibility: AppRow["visibility"]): AppRow {
+  return {
+    id: "app-id",
+    slug: "demo",
+    name: "Demo",
+    description: "",
+    owner_id: "owner",
+    visibility,
+    worker_name: "worker",
+    d1_id: null,
+    d1_name: null,
+    r2_bucket: null,
+    custom_domain_id: null,
+    d1_delete_after: null,
+    r2_delete_after: null,
+    active_version: 1,
+    created_at: 0,
+    updated_at: 0,
+    archived_at: null,
+    managed_by: "manual",
+    source_hash: null,
+    d1_adopted: 0,
+    r2_adopted: 0,
+  };
+}
+
+const user: User = {
+  id: "user-id",
+  email: "user@example.com",
+  name: "User",
+  picture: null,
+  platform_role: "member",
+};
+
+describe("app request trust models", () => {
+  test("public apps receive their own bearer and session cookie without platform identity", () => {
+    const headers = appRequestHeaders(new Request("https://demo.apps.myslop.app/api", {
+      headers: {
+        authorization: "Bearer msf_existing",
+        cookie: "sid=existing",
+        "x-myslop-user-id": "spoofed",
+        "x-myslop-internal-signature": "spoofed",
+      },
+    }), app("public"), user);
+    expect(headers.get("authorization")).toBe("Bearer msf_existing");
+    expect(headers.get("cookie")).toBe("sid=existing");
+    expect(headers.get("x-myslop-user-id")).toBeNull();
+    expect(headers.get("x-myslop-app-id")).toBeNull();
+    expect(headers.get("x-myslop-internal-signature")).toBeNull();
+  });
+
+  test("team apps strip client credentials and inject verified platform identity", () => {
+    const headers = appRequestHeaders(new Request("https://demo.apps.myslop.app/api", {
+      headers: { authorization: "Bearer client", cookie: "sid=client", "x-myslop-user-id": "spoofed" },
+    }), app("team"), user);
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("cookie")).toBeNull();
+    expect(headers.get("x-myslop-app-id")).toBe("app-id");
+    expect(headers.get("x-myslop-user-id")).toBe("user-id");
+    expect(headers.get("x-myslop-user-email")).toBe("user@example.com");
+  });
+});

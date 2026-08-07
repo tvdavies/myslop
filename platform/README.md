@@ -80,6 +80,7 @@ Provision the platform resources once:
 ```sh
 bunx wrangler d1 create myslop-apps
 bunx wrangler r2 bucket create myslop-app-assets
+bunx wrangler r2 bucket create myslop-mail-spool
 bunx wrangler dispatch-namespace create myslop-apps-production
 ```
 
@@ -98,6 +99,8 @@ bunx wrangler secret put CLOUDFLARE_ACCOUNT_ID
 bunx wrangler secret put CLOUDFLARE_API_TOKEN
 # Generate once with: openssl rand -base64 32
 bunx wrangler secret put SECRET_ENCRYPTION_KEY
+# Generate independently with: openssl rand -base64 32
+bunx wrangler secret put INTERNAL_DISPATCH_SECRET
 ```
 
 App secrets are encrypted with AES-256-GCM in the control database so they can be rebound to immutable versioned Workers. The encryption key exists only as a platform Worker secret; app Workers receive only their own decrypted bindings.

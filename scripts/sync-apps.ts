@@ -95,11 +95,16 @@ export async function syncApps(options: {
 
   for (const plan of plans.filter(({ action }) => action !== "delete")) {
     const path = paths.get(plan.slug)!;
+    const packageJson = await Bun.file(resolve(path, "package.json")).json().catch(() => null) as { scripts?: { gen?: string } } | null;
+    if (packageJson?.scripts?.gen) {
+      const generated = Bun.spawn(["bun", "run", "gen"], { cwd: path, stdout: "inherit", stderr: "inherit" });
+      if (await generated.exited !== 0) throw new Error(`generation failed for ${plan.slug}`);
+    }
     const existing = remote.get(plan.slug);
     if (existing && existing.managedBy !== "git") throw new Error(`refusing to reconcile ${plan.slug}: it is manually managed`);
     const sourceManifest = await Bun.file(resolve(path, "myslop.json")).json() as { app?: { resources?: { database?: unknown } } };
     const source = await createAppArtifact(path, {
-      suppressMigrations: Boolean(sourceManifest.app?.resources?.database),
+      suppressMigrations: Boolean(sourceManifest.app?.resources?.database) && (!existing || !existing.sourceHash),
     });
     plan.path = path;
     if (existing?.sourceHash === source.sourceHash) plan.action = "unchanged";
