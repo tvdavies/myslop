@@ -1,0 +1,7 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "myslop-apps-outbound",
+  "main": "src/outbound.ts",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": false
+}
