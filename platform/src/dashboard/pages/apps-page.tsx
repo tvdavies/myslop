@@ -1,12 +1,11 @@
-import { ExternalLink, Plus, Search, Settings2 } from "lucide-react";
+import { ExternalLink, Search, Settings2 } from "lucide-react";
 import * as React from "react";
 
-import { AppDialog } from "@/components/dialogs/app-dialog";
 import { AudienceBadge, ResourceLedger, RoleBadge } from "@/components/directory/status";
 import { EmptyState, RouteError, TableLoading } from "@/components/feedback/route-state";
 import { PageHeader } from "@/components/page-header";
 import { Panel } from "@/components/panel";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -70,9 +69,7 @@ export function AppsPage({ route, current }: { route: AppsRoute; current: Dashbo
   const dashboard = useDashboard();
   const filters = parseAppListState(current.search);
   const [search, setSearch] = React.useState(filters.q);
-  const [dialogOpen, setDialogOpen] = React.useState(false);
   const searchTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [revision, setRevision] = React.useState(0);
   React.useEffect(() => setSearch(filters.q), [filters.q]);
   React.useEffect(() => () => { if (searchTimer.current) clearTimeout(searchTimer.current); }, []);
 
@@ -81,7 +78,7 @@ export function AppsPage({ route, current }: { route: AppsRoute; current: Dashbo
   const description = routeDescription(route, dashboard.folders, folder);
   useDocumentTitle(title);
 
-  const resource = useRouteResource(`apps:${dashboard.teamId}:${current.pathname}:${current.search}:${revision}`, async (signal) => {
+  const resource = useRouteResource(`apps:${dashboard.teamId}:${current.pathname}:${current.search}`, async (signal) => {
     const parameters = new URLSearchParams({ teamId: dashboard.teamId, sort: filters.sort, direction: filters.direction });
     if (route.scope === "root") parameters.set("folderId", "root");
     if (route.scope === "folder") parameters.set("folderId", route.folderId);
@@ -112,7 +109,6 @@ export function AppsPage({ route, current }: { route: AppsRoute; current: Dashbo
     updateQuery({ sort: sort!, direction: direction! });
   }
 
-  const defaultFolderId = route.scope === "folder" ? route.folderId : "";
   const hasFilters = Boolean(filters.q || filters.audience || filters.role);
   const settingsHref = (app: ListedApp) => dashboard.href(`/apps/${encodeURIComponent(app.id)}/settings`);
 
@@ -122,7 +118,6 @@ export function AppsPage({ route, current }: { route: AppsRoute; current: Dashbo
         crumbs={[dashboard.team.name, title]}
         title={title}
         description={description}
-        action={<Button onClick={() => setDialogOpen(true)}><Plus />New app</Button>}
       />
       <form className="directory-toolbar" role="search" aria-label="Filter apps" onSubmit={(event) => event.preventDefault()}>
         <label className="search-field">
@@ -217,16 +212,9 @@ export function AppsPage({ route, current }: { route: AppsRoute; current: Dashbo
       {resource.status === "ready" && !resource.data.apps.length ? (
         <EmptyState
           title="No apps here"
-          description={hasFilters ? "Clear the filters to see more apps." : "Create an app in this location, then deploy it from an agent or your local machine."}
-          action={<Button onClick={() => setDialogOpen(true)}><Plus />Create app</Button>}
+          description={hasFilters ? "Clear the filters to see more apps." : "Deploy an app from an agent or your local machine and it will appear here."}
         />
       ) : null}
-      <AppDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        defaultFolderId={defaultFolderId}
-        onCreated={() => setRevision((value) => value + 1)}
-      />
     </div>
   );
 }

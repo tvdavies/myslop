@@ -66,7 +66,7 @@ const groups = [
 
 interface MockOptions {
   noTeam?: boolean;
-  onCreateApp?: (body: Record<string, unknown>) => void;
+  emptyApps?: boolean;
 }
 
 function json(route: Route, value: unknown, status = 200) {
@@ -90,11 +90,7 @@ async function mockDashboard(page: Page, options: MockOptions = {}) {
     if (path === `/api/teams/${team.id}/folders`) return json(route, { folders, rootAppCount: 0, canAdmin: true });
     if (path === `/api/teams/${team.id}/members`) return json(route, { members, canAdmin: true });
     if (path === `/api/teams/${team.id}/groups`) return json(route, { groups, canAdmin: true });
-    if (path === "/api/apps" && request.method() === "POST") {
-      options.onCreateApp?.(request.postDataJSON() as Record<string, unknown>);
-      return json(route, { app }, 201);
-    }
-    if (path === "/api/apps") return json(route, { apps: [app] });
+    if (path === "/api/apps") return json(route, { apps: options.emptyApps ? [] : [app] });
     if (path === `/api/apps/${app.id}`) {
       return json(route, {
         app,
@@ -146,6 +142,7 @@ test("renders the authenticated app library and persists a dark theme", async ({
   await expect(page.getByRole("cell", { name: "Commercial Dashboard Pipeline, forecast and revenue operations" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Open" })).toHaveAttribute("target", "_blank");
   await expect(page.getByRole("link", { name: "Settings" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /new app|create app/i })).toHaveCount(0);
 
   const searchGroup = page.locator('[data-slot="input-group"]');
   const searchIcon = searchGroup.locator('[data-slot="input-group-addon"]');
@@ -214,6 +211,16 @@ test("uses a labelled mobile navigation sheet and divider-based app rows", async
   await expectNoSeriousAccessibilityViolations(page);
 });
 
+test("keeps app creation out of the dashboard", async ({ page }) => {
+  await mockDashboard(page, { emptyApps: true });
+  await page.goto(`/dashboard?teamId=${team.id}`);
+
+  await expect(page.getByRole("heading", { level: 1, name: "All apps" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "No apps here" })).toBeVisible();
+  await expect(page.getByText("Deploy an app from an agent or your local machine and it will appear here.")).toBeVisible();
+  await expect(page.getByRole("button", { name: /new app|create app/i })).toHaveCount(0);
+});
+
 test("shows an actionable empty-team state without requesting team resources", async ({ page }) => {
   let teamRequests = 0;
   await page.on("request", (request) => {
@@ -225,26 +232,4 @@ test("shows an actionable empty-team state without requesting team resources", a
   await expect(page.getByRole("heading", { level: 1, name: "No team is available yet." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
   expect(teamRequests).toBe(0);
-});
-
-test("submits app creation with the selected team, location and audience", async ({ page }) => {
-  let submitted: Record<string, unknown> | null = null;
-  await mockDashboard(page, { onCreateApp: (body) => { submitted = body; } });
-  await page.goto(`/folders/${folders[0]!.id}?teamId=${team.id}`);
-
-  await page.getByRole("button", { name: "New app" }).click();
-  await page.getByLabel("Name").fill("Quarterly Planning");
-  await page.getByLabel("Description").fill("Planning and target setting");
-  await page.getByRole("dialog", { name: "Create an app" }).getByLabel("Audience").selectOption("restricted");
-  await page.getByRole("button", { name: "Create app" }).click();
-
-  await expect.poll(() => submitted).not.toBeNull();
-  expect(submitted).toMatchObject({
-    teamId: team.id,
-    folderId: folders[0]!.id,
-    name: "Quarterly Planning",
-    slug: "quarterly-planning",
-    description: "Planning and target setting",
-    audience: "restricted",
-  });
 });
