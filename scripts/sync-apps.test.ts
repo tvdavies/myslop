@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { deletionConfirmations, planApps, type RemoteApp } from "./sync-apps";
+import type { AppArtifact } from "../platform/src/artifact";
+import { deletionConfirmations, planApps, reconciliationBody, type RemoteApp } from "./sync-apps";
 
 const remote = (slug: string, managedBy: RemoteApp["managedBy"] = "git"): RemoteApp => ({
   id: slug,
@@ -28,5 +29,36 @@ describe("apps reconciliation plan", () => {
   test("parses only active exact confirmation lines", () => {
     const confirmations = deletionConfirmations("# DELETE old\nDELETE mail\n- DELETE files\nDELETE invalid slug\n");
     expect([...confirmations]).toEqual(["mail"]);
+  });
+
+  test("omitted access and visibility preserve the remote audience", () => {
+    const source = {
+      app: { name: "Demo", description: "", visibility: "team", domains: [], resources: {} },
+      deployment: { manifest: {}, assets: [], migrations: [] },
+      sourceHash: "source",
+      deploymentHash: "deployment",
+    } as unknown as AppArtifact;
+    const body = reconciliationBody(source, { app: { name: "Demo" } }, "demo", false);
+    expect(Object.hasOwn(body.app, "visibility")).toBe(false);
+    expect(Object.hasOwn(body, "access")).toBe(false);
+  });
+
+  test("explicit access controls audience without a synthesized legacy visibility", () => {
+    const source = {
+      app: {
+        name: "Demo",
+        description: "",
+        visibility: "private",
+        domains: [],
+        resources: {},
+        access: { audience: "restricted", users: [], groups: [] },
+      },
+      deployment: { manifest: {}, assets: [], migrations: [] },
+      sourceHash: "source",
+      deploymentHash: "deployment",
+    } as unknown as AppArtifact;
+    const body = reconciliationBody(source, { access: { audience: "restricted" } }, "demo", false);
+    expect(Object.hasOwn(body.app, "visibility")).toBe(false);
+    expect(body.access?.audience).toBe("restricted");
   });
 });

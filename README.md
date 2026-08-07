@@ -35,7 +35,7 @@ bun --cwd apps/mail run dev
 
 ## Apps as code
 
-Each direct child of `apps/` is one platform app. Its `myslop.json` declares app metadata and runtime capabilities; Worker source, assets, and forward-only migrations live beside it. CI compares the resolved app artifact with the platform and applies only changed definitions.
+Each direct child of `apps/` is one platform app. Its `myslop.json` can declare metadata, organizational folder, Public/Team/Restricted audience, direct user and reusable group assignments, and runtime capabilities; runtime source, assets, and forward-only migrations live beside it. CI compares both policy and deployable hashes so access or folder changes reconcile without uploading a new runtime version.
 
 Deleting a directory does not silently delete its production app. A git-managed app may only be destroyed when the same change adds an exact active confirmation to `apps/DELETIONS.md`.
 

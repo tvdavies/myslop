@@ -4,6 +4,19 @@ import cliB64 from "./cli.generated";
 import setupShB64 from "./setup-sh.generated";
 import { authenticate, exchangeSession, getSessionUser, mintToken, signOut, type Principal } from "./auth";
 import {
+  appPermissions,
+  audienceToVisibility,
+  effectiveAppAccess,
+  effectiveAppRole,
+  listAccessibleApps,
+  permissionsFor,
+  roleAtLeast,
+  roleFromRank,
+  visibilityToAudience,
+  type AppAccessRow,
+} from "./access";
+import { audit } from "./audit";
+import {
   attachCustomDomain,
   createD1,
   createR2Bucket,
@@ -21,17 +34,31 @@ import {
 import {
   contentType,
   decodeBase64,
+  isUniqueViolation,
   json,
   randomHex,
   safeAssetPath,
   sha256Hex,
+  sqlPlaceholders,
   validBindingName,
   validSlug,
 } from "./core";
-import { MANIFEST_SCHEMA, normalizeAppDomain, parseResolvedManifest, type ResolvedManifest } from "./manifest";
+import {
+  MANIFEST_SCHEMA,
+  normalizeAppDomain,
+  normalizeAppManifest,
+  parseResolvedManifest,
+  type ResolvedAccessManifest,
+  type ResolvedAppManifest,
+  type ResolvedManifest,
+} from "./manifest";
+import { activeTeamsFor, handleOrganizationApi } from "./organization";
+import { buildResourceTopology } from "./resources";
+import { canReconcileApps, reconciliationDeploymentChanged } from "./reconcile";
 import { acceptEmail, dispatchDueSchedules, reconcileAppSchedules, retryEmailDeliveries } from "./runtime";
 import { encryptSecret, loadAppSecrets } from "./secrets";
-import type { AppRow, DeploymentRow, Env, User } from "./types";
+import type { AppAudience, AppRole, AppRow, DeploymentRow, Env, User } from "./types";
+import { isDashboardPath } from "./ui";
 
 interface AssetInput {
   path: string;
@@ -62,6 +89,9 @@ function publicApp(app: AppRow) {
     name: app.name,
     description: app.description,
     visibility: app.visibility,
+    audience: visibilityToAudience(app.visibility),
+    teamId: app.team_id,
+    folderId: app.folder_id,
     url: appUrl(app.slug),
     activeVersion: app.active_version,
     hasDatabase: Boolean(app.d1_id),
@@ -72,57 +102,19 @@ function publicApp(app: AppRow) {
     filesAdopted: Boolean(app.r2_adopted),
     managedBy: app.managed_by,
     sourceHash: app.source_hash,
+    deploymentHash: app.deployment_hash,
     createdAt: app.created_at,
     updatedAt: app.updated_at,
   };
-}
-
-function manifestComponents(manifestJson: string | null) {
-  if (!manifestJson) return { assets: false, worker: false, database: false, files: false, secrets: 0, network: 0, email: false, schedules: 0, durableObjects: 0 };
-  try {
-    const manifest = parseResolvedManifest(JSON.parse(manifestJson));
-    return {
-      assets: manifest.assets,
-      worker: manifest.worker,
-      database: manifest.capabilities.database,
-      files: manifest.capabilities.files,
-      secrets: manifest.capabilities.secrets.length,
-      network: manifest.capabilities.network.length,
-      email: manifest.capabilities.email,
-      schedules: manifest.capabilities.schedules.length,
-      durableObjects: manifest.capabilities.durableObjects.length,
-    };
-  } catch {
-    return { assets: false, worker: false, database: false, files: false, secrets: 0, network: 0, email: false, schedules: 0, durableObjects: 0 };
-  }
 }
 
 function isPlatformOwner(principal: Principal): boolean {
   return principal.user.platform_role === "owner";
 }
 
-function canDestroy(app: AppRow, principal: Principal): boolean {
-  return isPlatformOwner(principal) || app.owner_id === principal.user.id;
-}
-
 async function publicAppFor(env: Env, app: AppRow, principal: Principal) {
-  return {
-    ...publicApp(app),
-    permissions: {
-      manage: await canManage(env, app, principal),
-      destroy: canDestroy(app, principal),
-    },
-  };
-}
-
-async function audit(env: Env, userId: string, action: string, appId: string | null, detail?: unknown) {
-  try {
-    await env.CONTROL_DB.prepare(
-      "INSERT INTO audit_log (id,app_id,user_id,action,detail,created_at) VALUES (?,?,?,?,?,?)",
-    ).bind(randomHex(12), appId, userId, action, detail ? JSON.stringify(detail) : null, Date.now()).run();
-  } catch (error) {
-    console.error("audit write failed", { action, appId, error });
-  }
+  const permissions = await appPermissions(env, app, principal);
+  return { ...publicApp(app), permissions, role: permissions.role };
 }
 
 async function recordOrphan(
@@ -158,22 +150,8 @@ async function getAppBySlugIncludingArchived(env: Env, slug: string): Promise<Ap
   return (await env.CONTROL_DB.prepare("SELECT * FROM apps WHERE slug=?").bind(slug).first<AppRow>()) ?? null;
 }
 
-async function canManage(env: Env, app: AppRow, principal: Principal): Promise<boolean> {
-  if (principal.appId && principal.appId !== app.id) return false;
-  if (isPlatformOwner(principal) || app.owner_id === principal.user.id) return true;
-  const member = await env.CONTROL_DB.prepare(
-    "SELECT role FROM app_members WHERE app_id=? AND user_id=?",
-  ).bind(app.id, principal.user.id).first<{ role: string }>();
-  return member?.role === "editor";
-}
-
-async function canView(env: Env, app: AppRow, user: User | null): Promise<boolean> {
-  if (app.visibility === "public") return true;
-  if (!user) return false;
-  if (user.platform_role === "owner" || app.visibility === "team" || app.owner_id === user.id) return true;
-  return Boolean(await env.CONTROL_DB.prepare(
-    "SELECT 1 ok FROM app_members WHERE app_id=? AND user_id=?",
-  ).bind(app.id, user.id).first());
+async function canDestroy(env: Env, app: AppRow, principal: Principal): Promise<boolean> {
+  return (await appPermissions(env, app, principal)).destroy;
 }
 
 function ensureCsrf(req: Request, principal: Principal): Response | null {
@@ -213,7 +191,7 @@ async function handleCreateApp(req: Request, env: Env, principal: Principal): Pr
 }
 
 async function handleCreateAppLocked(req: Request, env: Env, principal: Principal): Promise<Response> {
-  let body: { slug?: string; name?: string; description?: string; visibility?: string };
+  let body: { slug?: string; name?: string; description?: string; visibility?: string; audience?: AppAudience; teamId?: string; folderId?: string | null };
   try {
     body = await req.json();
   } catch {
@@ -222,8 +200,17 @@ async function handleCreateAppLocked(req: Request, env: Env, principal: Principa
   if (!validSlug(body.slug)) return json({ error: "slug must be 3-48 lowercase letters, numbers, and hyphens" }, 400);
   const name = String(body.name || body.slug).trim().slice(0, 100);
   const description = String(body.description || "").trim().slice(0, 500);
-  const visibility = body.visibility || "team";
+  const visibility = body.audience ? audienceToVisibility(body.audience) : body.visibility || "team";
   if (!name || !["private", "team", "public"].includes(visibility)) return json({ error: "invalid app" }, 400);
+  const teams = await activeTeamsFor(env, principal);
+  const team = body.teamId ? teams.find(({ id }) => id === body.teamId) : teams[0];
+  if (!team) return json({ error: "active team membership required" }, 403);
+  const folderId = body.folderId || null;
+  if (folderId) {
+    const folder = await env.CONTROL_DB.prepare("SELECT 1 ok FROM folders WHERE id=? AND team_id=?")
+      .bind(folderId, team.id).first();
+    if (!folder) return json({ error: "folder not found" }, 400);
+  }
   const owned = await env.CONTROL_DB.prepare(
     "SELECT COUNT(*) count FROM apps WHERE owner_id=? AND archived_at IS NULL",
   ).bind(principal.user.id).first<{ count: number }>();
@@ -233,12 +220,17 @@ async function handleCreateAppLocked(req: Request, env: Env, principal: Principa
   const now = Date.now();
   const workerName = `app-${id}`;
   try {
-    await env.CONTROL_DB.prepare(
-      `INSERT INTO apps (id,slug,name,description,owner_id,visibility,worker_name,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-    ).bind(id, body.slug, name, description, principal.user.id, visibility, workerName, now, now).run();
+    await env.CONTROL_DB.batch([
+      env.CONTROL_DB.prepare(
+        `INSERT INTO apps (id,slug,name,description,owner_id,visibility,worker_name,created_at,updated_at,team_id,folder_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      ).bind(id, body.slug, name, description, principal.user.id, visibility, workerName, now, now, team.id, folderId),
+      env.CONTROL_DB.prepare(
+        "INSERT INTO app_user_assignments (app_id,user_id,role,granted_by,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+      ).bind(id, principal.user.id, "owner", principal.user.id, now, now),
+    ]);
   } catch (error) {
-    return json({ error: String(error).includes("UNIQUE") ? "slug already exists" : "could not create app" }, 409);
+    return json({ error: isUniqueViolation(error) ? "slug already exists" : "could not create app" }, 409);
   }
 
   let customDomain: { id: string } | null = null;
@@ -253,8 +245,8 @@ async function handleCreateAppLocked(req: Request, env: Env, principal: Principa
   }
 
   const app = await getAppById(env, id);
-  await audit(env, principal.user.id, "app.created", id, { slug: body.slug });
-  return json({ app: publicApp(app!) }, 201);
+  await audit(env, { actorId: principal.user.id, teamId: team.id, appId: id, action: "app.created", detail: { slug: body.slug, folderId } });
+  return json({ app: await publicAppFor(env, app!, principal) }, 201);
 }
 
 async function ensureCapabilities(env: Env, app: AppRow, manifest: ResolvedManifest): Promise<AppRow> {
@@ -561,7 +553,7 @@ async function handleDeployLocked(req: Request, env: Env, principal: Principal, 
         ).bind(app.id, version, binding, className, Date.now()),
       ));
     }
-    await audit(env, principal.user.id, "app.deployed", app.id, { version, manifest });
+    await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.deployed", detail: { version, manifest } });
     return json({ deployment: { id: deploymentId, version, url: appUrl(app.slug), assets: assets.length, manifest } }, 201);
   } catch (error) {
     if (workerName) await deleteUserWorker(env, workerName).catch((cleanup) => recordOrphan(env, "worker", workerName, app.id, cleanup));
@@ -619,7 +611,7 @@ async function handleRollbackLocked(req: Request, env: Env, principal: Principal
     await env.CONTROL_DB.prepare("UPDATE apps SET active_version=?,updated_at=? WHERE id=?")
       .bind(version, Date.now(), app.id).run();
     await scheduleUnusedResources(env, app, manifest);
-    await audit(env, principal.user.id, "app.rolled_back", app.id, { version });
+    await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.rolled_back", detail: { version } });
     return json({ ok: true, version, url: appUrl(app.slug) });
   } catch (error) {
     return json({ error: `rollback failed: ${error instanceof Error ? error.message : error}` }, 502);
@@ -659,7 +651,7 @@ async function handleSetSecretLocked(req: Request, env: Env, principal: Principa
       const after = await getAppById(env, app.id);
       if (after?.active_version === freshApp.active_version) break;
     }
-    await audit(env, principal.user.id, "secret.updated", app.id, { name });
+    await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "secret.updated", detail: { name } });
     return json({ ok: true, name });
   } catch (error) {
     return json({ error: `secret update failed: ${error instanceof Error ? error.message : error}` }, 502);
@@ -675,7 +667,7 @@ async function activeManifest(env: Env, app: AppRow): Promise<ResolvedManifest |
 }
 
 async function handlePruneApp(req: Request, env: Env, principal: Principal, app: AppRow): Promise<Response> {
-  if (!canDestroy(app, principal)) return json({ error: "only an app or platform owner can delete stored resources" }, 403);
+  if (!(await canDestroy(env, app, principal))) return json({ error: "only an app owner can delete stored resources" }, 403);
   const body = await req.json().catch(() => ({})) as { confirm?: string };
   if (body.confirm !== app.slug) return json({ error: `confirm pruning with {\"confirm\":\"${app.slug}\"}` }, 400);
   return withAppOperationLock(env, app.id, async () => {
@@ -697,13 +689,14 @@ async function handlePruneApp(req: Request, env: Env, principal: Principal, app:
       await removeDatabase(env, afterFiles);
       removed.push("database");
     }
-    await audit(env, principal.user.id, "app.pruned", app.id, { removed });
+    await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.pruned", detail: { removed } });
     return json({ ok: true, removed });
   });
 }
 
-async function handleDestroyApp(req: Request, env: Env, principal: Principal, app: AppRow): Promise<Response> {
-  if (!canDestroy(app, principal)) return json({ error: "only an app or platform owner can delete an app" }, 403);
+async function handleDestroyApp(req: Request, env: Env, principal: Principal, app: AppRow, fromReconciliation = false): Promise<Response> {
+  if (!fromReconciliation && !(await canDestroy(env, app, principal))) return json({ error: "only an app owner can delete an app" }, 403);
+  if (fromReconciliation && !isPlatformOwner(principal)) return json({ error: "platform owner required" }, 403);
   const body = await req.json().catch(() => ({})) as { confirm?: string };
   if (body.confirm !== app.slug) return json({ error: `confirm deletion with {\"confirm\":\"${app.slug}\"}` }, 400);
   return withAppOperationLock(env, app.id, async () => {
@@ -715,7 +708,7 @@ async function handleDestroyApp(req: Request, env: Env, principal: Principal, ap
       `UPDATE apps SET archived_at=?,updated_at=?,d1_delete_after=CASE WHEN d1_id IS NULL THEN NULL ELSE ? END,
        r2_delete_after=CASE WHEN r2_bucket IS NULL THEN NULL ELSE ? END WHERE id=? AND archived_at IS NULL`,
     ).bind(now, now, recoveryUntil, recoveryUntil, app.id).run();
-    await audit(env, principal.user.id, "app.archived", app.id, { slug: app.slug, recoveryUntil });
+    await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.archived", detail: { slug: app.slug, recoveryUntil } });
     return json({ ok: true, archived: app.slug, recoveryUntil });
   });
 }
@@ -738,7 +731,7 @@ async function purgeArchivedApp(env: Env, app: AppRow): Promise<void> {
       .bind(app.id).all<{ cloudflare_id: string }>();
     for (const domain of domains.results) await deleteCustomDomain(env, domain.cloudflare_id);
     if (app.custom_domain_id) await deleteCustomDomain(env, app.custom_domain_id);
-    await audit(env, "system", "app.deleted", app.id, { slug: app.slug });
+    await audit(env, { actorId: "system", teamId: app.team_id, appId: app.id, action: "app.deleted", detail: { slug: app.slug } });
     await env.CONTROL_DB.batch([
       env.CONTROL_DB.prepare("DELETE FROM app_members WHERE app_id=?").bind(app.id),
       env.CONTROL_DB.prepare("DELETE FROM app_secrets WHERE app_id=?").bind(app.id),
@@ -780,9 +773,9 @@ async function handleAdoptResources(req: Request, env: Env, principal: Principal
     ).bind(database?.uuid ?? null, database?.name ?? null, database?.uuid ?? null, bucket?.name ?? null, bucket?.name ?? null, Date.now(), app.id).run();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return json({ error: message.includes("UNIQUE") ? "resource is already attached to another app" : `resource adoption failed: ${message}` }, 409);
+    return json({ error: isUniqueViolation(error) ? "resource is already attached to another app" : `resource adoption failed: ${message}` }, 409);
   }
-  await audit(env, principal.user.id, "app.resources.adopted", app.id, { database, bucket });
+  await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.resources.adopted", detail: { database, bucket } });
   return json({ app: publicApp((await getAppById(env, app.id))!) });
 }
 
@@ -810,7 +803,7 @@ async function handleAddDomain(req: Request, env: Env, principal: Principal, app
     await env.CONTROL_DB.prepare(
       "UPDATE app_domains SET cloudflare_id=?,status='active',error=NULL,updated_at=? WHERE hostname=? AND app_id=?",
     ).bind(domain.id, Date.now(), hostname, app.id).run();
-    await audit(env, principal.user.id, "app.domain.attached", app.id, { hostname });
+    await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.domain.attached", detail: { hostname } });
     return json({ hostname, status: "active" }, 201);
   } catch (error) {
     await env.CONTROL_DB.prepare("UPDATE app_domains SET status='error',error=?,updated_at=? WHERE hostname=?")
@@ -834,7 +827,7 @@ async function handleDeleteDomain(env: Env, principal: Principal, app: AppRow, h
   try {
     if (row.cloudflare_id) await deleteCustomDomain(env, row.cloudflare_id);
     await env.CONTROL_DB.prepare("DELETE FROM app_domains WHERE hostname=? AND app_id=?").bind(hostname, app.id).run();
-    await audit(env, principal.user.id, "app.domain.detached", app.id, { hostname });
+    await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.domain.detached", detail: { hostname } });
     return json({ ok: true });
   } catch (error) {
     await env.CONTROL_DB.prepare("UPDATE app_domains SET status='error',error=?,updated_at=? WHERE hostname=?")
@@ -843,11 +836,215 @@ async function handleDeleteDomain(env: Env, principal: Principal, app: AppRow, h
   }
 }
 
+// Every list endpoint decorates its apps with the same owner, role and topology projection.
+async function listedApps(env: Env, apps: AppAccessRow[]) {
+  const deployments = await env.CONTROL_DB.prepare(
+    `SELECT d.app_id,d.manifest_json FROM deployments d JOIN apps a ON a.id=d.app_id AND a.active_version=d.version WHERE d.status='active'`,
+  ).all<{ app_id: string; manifest_json: string }>();
+  const manifests = new Map(deployments.results.map((row) => [row.app_id, row.manifest_json]));
+  const owners = await env.CONTROL_DB.prepare("SELECT id,name,email FROM users").all<{ id: string; name: string | null; email: string | null }>();
+  const ownerMap = new Map(owners.results.map((owner) => [owner.id, owner]));
+  return apps.map((app) => {
+    const role = roleFromRank(app.effective_rank);
+    return {
+      ...publicApp(app),
+      role,
+      permissions: permissionsFor(app, role),
+      owner: ownerMap.get(app.owner_id) ?? null,
+      resources: buildResourceTopology({ app, manifestJson: manifests.get(app.id) ?? null }),
+    };
+  });
+}
+
+function policyManagedByGit(app: AppRow, subject: "folder" | "access"): Response {
+  if (app.managed_by === "git") {
+    return json({ error: `app ${subject} is managed by git; update myslop.json and run reconciliation` }, 409);
+  }
+  return json({ error: "app owner required" }, 403);
+}
+
+async function appAccessDetails(env: Env, app: AppRow, principal: Principal) {
+  const effective = await effectiveAppAccess(env, app, principal.user);
+  const permissions = permissionsFor(app, effective.role);
+  const owner = await env.CONTROL_DB.prepare("SELECT id,email,name,picture FROM users WHERE id=?")
+    .bind(app.owner_id).first();
+  let users: unknown[] = [];
+  let groups: unknown[] = [];
+  if (roleAtLeast(effective.role, "owner")) {
+    users = (await env.CONTROL_DB.prepare(
+      `SELECT u.id,u.email,u.name,u.picture,a.role
+       FROM app_user_assignments a JOIN users u ON u.id=a.user_id
+       WHERE a.app_id=? ORDER BY CASE a.role WHEN 'owner' THEN 3 WHEN 'editor' THEN 2 ELSE 1 END DESC,COALESCE(u.name,u.email)`,
+    ).bind(app.id).all()).results;
+    groups = (await env.CONTROL_DB.prepare(
+      `SELECT g.id,g.slug,g.name,g.description,a.role,COUNT(m.user_id) member_count
+       FROM app_group_assignments a JOIN team_groups g ON g.id=a.group_id
+       LEFT JOIN group_members m ON m.group_id=g.id
+       WHERE a.app_id=? GROUP BY g.id,a.role ORDER BY g.name`,
+    ).bind(app.id).all()).results;
+  }
+  return {
+    audience: visibilityToAudience(app.visibility),
+    effectiveRole: effective.role,
+    sources: effective.sources,
+    owner,
+    users,
+    groups,
+    managedBy: app.managed_by,
+    readOnly: !permissions.modifyAccess,
+  };
+}
+
+async function handleSetAppFolder(req: Request, env: Env, principal: Principal, app: AppRow): Promise<Response> {
+  const permissions = await appPermissions(env, app, principal);
+  if (!permissions.moveApp) return policyManagedByGit(app, "folder");
+  const body = await req.json().catch(() => ({})) as { folderId?: string | null };
+  const folderId = body.folderId || null;
+  if (folderId) {
+    const folder = await env.CONTROL_DB.prepare("SELECT 1 ok FROM folders WHERE id=? AND team_id=?")
+      .bind(folderId, app.team_id).first();
+    if (!folder) return json({ error: "folder not found" }, 400);
+  }
+  const previousFolderId = app.folder_id;
+  await env.CONTROL_DB.prepare("UPDATE apps SET folder_id=?,updated_at=? WHERE id=?")
+    .bind(folderId, Date.now(), app.id).run();
+  if (previousFolderId !== folderId) {
+    await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.folder.changed", detail: { previousFolderId, folderId, source: "manual" } });
+  }
+  return json({ app: await publicAppFor(env, (await getAppById(env, app.id))!, principal) });
+}
+
+async function handleSetAppAccess(req: Request, env: Env, principal: Principal, app: AppRow): Promise<Response> {
+  const permissions = await appPermissions(env, app, principal);
+  if (!permissions.modifyAccess) return policyManagedByGit(app, "access");
+  const body = await req.json().catch(() => ({})) as {
+    audience?: AppAudience;
+    users?: { userId?: string; role?: AppRole }[];
+    groups?: { groupId?: string; role?: "viewer" | "editor" }[];
+  };
+  if (!body.audience || !["restricted", "team", "public"].includes(body.audience)) return json({ error: "invalid audience" }, 400);
+  if (!Array.isArray(body.users) || !Array.isArray(body.groups)) return json({ error: "users and groups are required" }, 400);
+  const userIds = body.users.map(({ userId }) => userId || "");
+  const groupIds = body.groups.map(({ groupId }) => groupId || "");
+  if (userIds.some((id) => !id) || new Set(userIds).size !== userIds.length) return json({ error: "user assignments must be unique" }, 400);
+  if (groupIds.some((id) => !id) || new Set(groupIds).size !== groupIds.length) return json({ error: "group assignments must be unique" }, 400);
+  if (body.users.some(({ role }) => !role || !["viewer", "editor", "owner"].includes(role))) return json({ error: "invalid user role" }, 400);
+  if (body.groups.some(({ role }) => !role || !["viewer", "editor"].includes(role))) return json({ error: "invalid group role" }, 400);
+  const primary = body.users.find(({ userId }) => userId === app.owner_id);
+  if (primary && primary.role !== "owner") return json({ error: "the primary owner cannot be downgraded" }, 400);
+  if (userIds.length) {
+    const members = await env.CONTROL_DB.prepare(
+      `SELECT user_id FROM team_members WHERE team_id=? AND status='active' AND user_id IN (${sqlPlaceholders(userIds.length)})`,
+    ).bind(app.team_id, ...userIds).all<{ user_id: string }>();
+    if (members.results.length !== userIds.length) return json({ error: "every assigned user must be an active team member" }, 400);
+  }
+  if (groupIds.length) {
+    const groups = await env.CONTROL_DB.prepare(
+      `SELECT id FROM team_groups WHERE team_id=? AND id IN (${sqlPlaceholders(groupIds.length)})`,
+    ).bind(app.team_id, ...groupIds).all<{ id: string }>();
+    if (groups.results.length !== groupIds.length) return json({ error: "every assigned group must belong to the app team" }, 400);
+  }
+  const now = Date.now();
+  await env.CONTROL_DB.batch([
+    env.CONTROL_DB.prepare("UPDATE apps SET visibility=?,updated_at=? WHERE id=?")
+      .bind(audienceToVisibility(body.audience), now, app.id),
+    env.CONTROL_DB.prepare("DELETE FROM app_user_assignments WHERE app_id=? AND user_id<>?").bind(app.id, app.owner_id),
+    env.CONTROL_DB.prepare("DELETE FROM app_group_assignments WHERE app_id=?").bind(app.id),
+    ...body.users.filter(({ userId }) => userId !== app.owner_id).map(({ userId, role }) => env.CONTROL_DB.prepare(
+      "INSERT INTO app_user_assignments (app_id,user_id,role,granted_by,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+    ).bind(app.id, userId, role, principal.user.id, now, now)),
+    ...body.groups.map(({ groupId, role }) => env.CONTROL_DB.prepare(
+      "INSERT INTO app_group_assignments (app_id,group_id,role,granted_by,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+    ).bind(app.id, groupId, role, principal.user.id, now, now)),
+  ]);
+  await audit(env, {
+    actorId: principal.user.id,
+    teamId: app.team_id,
+    appId: app.id,
+    action: "app.access.updated",
+    detail: { audience: body.audience, users: body.users, groups: body.groups, source: "manual" },
+  });
+  const refreshed = (await getAppById(env, app.id))!;
+  return json({ app: await publicAppFor(env, refreshed, principal), access: await appAccessDetails(env, refreshed, principal) });
+}
+
 interface ReconcileInput {
   sourceHash?: string;
-  app?: { name?: string; description?: string; visibility?: AppRow["visibility"]; domains?: string[] };
+  deploymentHash?: string;
+  app?: { name?: string; description?: string; visibility?: AppRow["visibility"]; folder?: string | null; domains?: string[] };
+  access?: ResolvedAccessManifest;
   resources?: { database?: { id?: string; name?: string }; bucket?: { name?: string } };
   deployment?: DeployInput;
+}
+
+interface ReconcilePolicy {
+  normalized: ResolvedAppManifest;
+  teamId: string;
+  ownerId: string;
+  folderId: string | null;
+  users: { userId: string; email: string; role: AppRole }[];
+  groups: { groupId: string; slug: string; role: "viewer" | "editor" }[];
+}
+
+export async function resolveReconcilePolicy(
+  env: Env,
+  principal: Principal,
+  slug: string,
+  body: ReconcileInput,
+  existing: AppRow | null,
+): Promise<ReconcilePolicy | Response> {
+  const teams = existing ? [] : await activeTeamsFor(env, principal);
+  const teamId = existing?.team_id ?? teams[0]?.id;
+  if (!teamId) return json({ error: "active team membership required" }, 403);
+  const ownerId = existing?.owner_id ?? principal.user.id;
+  let normalized: ResolvedAppManifest;
+  try {
+    const visibility = body.app?.visibility ?? (body.access ? undefined : existing?.visibility);
+    normalized = normalizeAppManifest({
+      app: {
+        name: body.app?.name ?? existing?.name ?? slug,
+        description: body.app?.description ?? existing?.description ?? "",
+        ...(visibility ? { visibility } : {}),
+        ...(body.app && Object.hasOwn(body.app, "folder") ? { folder: body.app.folder } : {}),
+        domains: body.app?.domains,
+      },
+      access: body.access,
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+
+  let folderId = existing?.folder_id ?? null;
+  if (body.app && Object.hasOwn(body.app, "folder")) {
+    if (normalized.folder === null) folderId = null;
+    else if (normalized.folder) {
+      const folder = await env.CONTROL_DB.prepare("SELECT id FROM folders WHERE team_id=? AND slug=?")
+        .bind(teamId, normalized.folder).first<{ id: string }>();
+      if (!folder) return json({ error: `folder not found in app team: ${normalized.folder}` }, 400);
+      folderId = folder.id;
+    }
+  }
+
+  const users: ReconcilePolicy["users"] = [];
+  const groups: ReconcilePolicy["groups"] = [];
+  if (normalized.access) {
+    for (const assignment of normalized.access.users) {
+      const user = await env.CONTROL_DB.prepare(
+        `SELECT u.id FROM users u JOIN team_members m ON m.user_id=u.id
+         WHERE m.team_id=? AND m.status='active' AND lower(u.email)=?`,
+      ).bind(teamId, assignment.email).first<{ id: string }>();
+      if (!user) return json({ error: `active team user not found: ${assignment.email}` }, 400);
+      if (user.id === ownerId && assignment.role !== "owner") return json({ error: "the primary owner cannot be downgraded" }, 400);
+      users.push({ userId: user.id, email: assignment.email, role: assignment.role });
+    }
+    for (const assignment of normalized.access.groups) {
+      const group = await env.CONTROL_DB.prepare("SELECT id FROM team_groups WHERE team_id=? AND slug=?")
+        .bind(teamId, assignment.slug).first<{ id: string }>();
+      if (!group) return json({ error: `group not found in app team: ${assignment.slug}` }, 400);
+      groups.push({ groupId: group.id, slug: assignment.slug, role: assignment.role });
+    }
+  }
+  return { normalized, teamId, ownerId, folderId, users, groups };
 }
 
 async function handleReconcileApp(
@@ -856,7 +1053,9 @@ async function handleReconcileApp(
   principal: Principal,
   slug: string,
 ): Promise<Response> {
-  if (!isPlatformOwner(principal)) return json({ error: "platform owner required" }, 403);
+  if (!canReconcileApps(principal)) {
+    return json({ error: principal.appId ? "token is scoped to one app" : "platform owner required" }, 403);
+  }
   if (!validSlug(slug)) return json({ error: "invalid app slug" }, 400);
   if (req.method === "DELETE") {
     const body = await req.json().catch(() => ({})) as { confirm?: string };
@@ -864,22 +1063,27 @@ async function handleReconcileApp(
     if (!app) return json({ ok: true, deleted: slug });
     if (app.managed_by !== "git") return json({ error: "refusing to delete a manually managed app" }, 409);
     if (body.confirm !== slug) return json({ error: `confirm deletion with {"confirm":"${slug}"}` }, 400);
-    return handleDestroyApp(new Request(req.url, { method: "DELETE", body: JSON.stringify(body) }), env, principal, app);
+    return handleDestroyApp(new Request(req.url, { method: "DELETE", body: JSON.stringify(body) }), env, principal, app, true);
   }
   if (req.method !== "PUT") return json({ error: "method not allowed" }, 405);
   const body = await req.json().catch(() => null) as ReconcileInput | null;
-  if (!body?.sourceHash || !/^[a-f0-9]{64}$/.test(body.sourceHash) || !body.deployment) {
-    return json({ error: "sourceHash and deployment are required" }, 400);
+  if (
+    !body?.sourceHash || !/^[a-f0-9]{64}$/.test(body.sourceHash) ||
+    !body.deploymentHash || !/^[a-f0-9]{64}$/.test(body.deploymentHash) ||
+    !body.deployment
+  ) {
+    return json({ error: "sourceHash, deploymentHash and deployment are required" }, 400);
   }
+  const sourceHash = body.sourceHash;
+  const deploymentHash = body.deploymentHash;
   let app = await getAppBySlugIncludingArchived(env, slug);
-  if (app?.archived_at) {
-    if (Date.now() - app.archived_at >= RESOURCE_GRACE_MS) return json({ error: "app recovery window has expired" }, 410);
-    await env.CONTROL_DB.prepare(
-      "UPDATE apps SET archived_at=NULL,d1_delete_after=NULL,r2_delete_after=NULL,updated_at=? WHERE id=?",
-    ).bind(Date.now(), app.id).run();
-    await audit(env, principal.user.id, "app.restored", app.id, { source: "git reconciliation" });
-    app = await getAppById(env, app.id);
+  if (app?.archived_at && Date.now() - app.archived_at >= RESOURCE_GRACE_MS) {
+    return json({ error: "app recovery window has expired" }, 410);
   }
+  if (app && app.managed_by !== "git") return json({ error: "slug belongs to a manually managed app" }, 409);
+  const policy = await resolveReconcilePolicy(env, principal, slug, body, app);
+  if (policy instanceof Response) return policy;
+
   if (!app) {
     const created = await handleCreateApp(
       new Request(req.url, {
@@ -887,9 +1091,13 @@ async function handleReconcileApp(
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           slug,
-          name: body.app?.name || slug,
-          description: body.app?.description || "",
-          visibility: body.app?.visibility || "team",
+          teamId: policy.teamId,
+          folderId: policy.folderId,
+          name: policy.normalized.name || slug,
+          description: policy.normalized.description,
+          visibility: policy.normalized.access
+            ? audienceToVisibility(policy.normalized.access.audience)
+            : policy.normalized.visibility,
         }),
       }),
       env,
@@ -900,26 +1108,99 @@ async function handleReconcileApp(
     if (!app) return json({ error: "created app could not be loaded" }, 500);
     await env.CONTROL_DB.prepare("UPDATE apps SET managed_by='git' WHERE id=?").bind(app.id).run();
     app = (await getAppById(env, app.id))!;
-  } else if (app.managed_by !== "git") {
-    return json({ error: "slug belongs to a manually managed app" }, 409);
   }
 
   return withAppOperationLock(env, app.id, async () => {
+    const archivedState = app!.archived_at ? {
+      archivedAt: app!.archived_at,
+      databaseDeleteAfter: app!.d1_delete_after,
+      filesDeleteAfter: app!.r2_delete_after,
+    } : null;
+    if (archivedState) {
+      await env.CONTROL_DB.prepare(
+        "UPDATE apps SET archived_at=NULL,d1_delete_after=NULL,r2_delete_after=NULL,updated_at=? WHERE id=?",
+      ).bind(Date.now(), app!.id).run();
+    }
+    const finish = async (response: Response): Promise<Response> => {
+      if (!archivedState) return response;
+      if (!response.ok) {
+        await env.CONTROL_DB.prepare(
+          "UPDATE apps SET archived_at=?,d1_delete_after=?,r2_delete_after=?,updated_at=? WHERE id=?",
+        ).bind(
+          archivedState.archivedAt,
+          archivedState.databaseDeleteAfter,
+          archivedState.filesDeleteAfter,
+          Date.now(),
+          app!.id,
+        ).run();
+        return response;
+      }
+      await audit(env, {
+        actorId: principal.user.id,
+        teamId: app!.team_id,
+        appId: app!.id,
+        action: "app.restored",
+        detail: { source: "git reconciliation" },
+      });
+      return response;
+    };
     const current = await getAppById(env, app!.id);
-    if (!current) return json({ error: "app not found" }, 404);
-    const visibility = body.app?.visibility ?? current.visibility;
-    if (!["private", "team", "public"].includes(visibility)) return json({ error: "invalid visibility" }, 400);
-    await env.CONTROL_DB.prepare(
-      "UPDATE apps SET name=?,description=?,visibility=?,updated_at=? WHERE id=?",
-    ).bind(
-      String(body.app?.name || current.name).trim().slice(0, 100),
-      String(body.app?.description ?? current.description).trim().slice(0, 500),
-      visibility,
-      Date.now(),
-      current.id,
-    ).run();
+    if (!current) return finish(json({ error: "app not found" }, 404));
+    try {
+      const normalized = policy.normalized;
+    const folderId = policy.folderId;
+    const resolvedUsers = policy.users;
+    const resolvedGroups = policy.groups;
+    const desiredVisibility = normalized.access ? audienceToVisibility(normalized.access.audience) : normalized.visibility;
+    const currentUsers = normalized.access ? (await env.CONTROL_DB.prepare(
+      "SELECT user_id,role FROM app_user_assignments WHERE app_id=? AND user_id<>? ORDER BY user_id",
+    ).bind(current.id, current.owner_id).all<{ user_id: string; role: AppRole }>()).results : [];
+    const currentGroups = normalized.access ? (await env.CONTROL_DB.prepare(
+      "SELECT group_id,role FROM app_group_assignments WHERE app_id=? ORDER BY group_id",
+    ).bind(current.id).all<{ group_id: string; role: "viewer" | "editor" }>()).results : [];
+    const desiredUsers = resolvedUsers.filter(({ userId }) => userId !== current.owner_id)
+      .map(({ userId, role }) => ({ user_id: userId, role })).sort((left, right) => left.user_id.localeCompare(right.user_id));
+    const desiredGroups = resolvedGroups.map(({ groupId, role }) => ({ group_id: groupId, role }))
+      .sort((left, right) => left.group_id.localeCompare(right.group_id));
+    const policyChanged =
+      current.name !== normalized.name || current.description !== normalized.description ||
+      current.visibility !== desiredVisibility || current.folder_id !== folderId ||
+      (normalized.access !== undefined && (
+        JSON.stringify(currentUsers) !== JSON.stringify(desiredUsers) ||
+        JSON.stringify(currentGroups) !== JSON.stringify(desiredGroups)
+      ));
+
+    const applyPolicy = async () => {
+      if (!policyChanged) return;
+      const now = Date.now();
+      const statements = [
+        env.CONTROL_DB.prepare("UPDATE apps SET name=?,description=?,visibility=?,folder_id=?,updated_at=? WHERE id=?")
+          .bind(normalized.name || current.name, normalized.description, desiredVisibility, folderId, now, current.id),
+      ];
+      if (normalized.access) {
+        statements.push(
+          env.CONTROL_DB.prepare("DELETE FROM app_user_assignments WHERE app_id=? AND user_id<>?").bind(current.id, current.owner_id),
+          env.CONTROL_DB.prepare("DELETE FROM app_group_assignments WHERE app_id=?").bind(current.id),
+          ...desiredUsers.map(({ user_id, role }) => env.CONTROL_DB.prepare(
+            "INSERT INTO app_user_assignments (app_id,user_id,role,granted_by,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+          ).bind(current.id, user_id, role, principal.user.id, now, now)),
+          ...desiredGroups.map(({ group_id, role }) => env.CONTROL_DB.prepare(
+            "INSERT INTO app_group_assignments (app_id,group_id,role,granted_by,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+          ).bind(current.id, group_id, role, principal.user.id, now, now)),
+        );
+      }
+      await env.CONTROL_DB.batch(statements);
+      await audit(env, {
+        actorId: principal.user.id,
+        teamId: current.team_id,
+        appId: current.id,
+        action: "app.policy.reconciled",
+        detail: { folder: normalized.folder, access: normalized.access, source: "git" },
+      });
+    };
 
     let refreshed = (await getAppById(env, current.id))!;
+    let resourcesChanged = false;
     if (body.resources && ((!refreshed.d1_id && body.resources.database) || (!refreshed.r2_bucket && body.resources.bucket))) {
       const adopted = await handleAdoptResources(
         new Request(req.url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body.resources) }),
@@ -927,13 +1208,16 @@ async function handleReconcileApp(
         principal,
         refreshed,
       );
-      if (!adopted.ok) return adopted;
+      if (!adopted.ok) return finish(adopted);
+      resourcesChanged = true;
       refreshed = (await getAppById(env, current.id))!;
     }
 
+    let domainsChanged = false;
     if (body.app?.domains !== undefined) {
       const desiredDomains = new Set(body.app.domains.map(normalizeAppDomain));
-      const domainRows = await env.CONTROL_DB.prepare("SELECT hostname FROM app_domains WHERE app_id=?").bind(current.id).all<{ hostname: string }>();
+      const domainRows = await env.CONTROL_DB.prepare("SELECT hostname FROM app_domains WHERE app_id=?")
+        .bind(current.id).all<{ hostname: string }>();
       for (const hostname of desiredDomains) {
         if (domainRows.results.some((row) => row.hostname === hostname)) continue;
         const attached = await handleAddDomain(
@@ -942,32 +1226,54 @@ async function handleReconcileApp(
           principal,
           refreshed,
         );
-        if (!attached.ok) return attached;
+        if (!attached.ok) return finish(attached);
+        domainsChanged = true;
       }
       for (const { hostname } of domainRows.results) {
         if (desiredDomains.has(hostname)) continue;
         const detached = await handleDeleteDomain(env, principal, refreshed, hostname);
-        if (!detached.ok) return detached;
+        if (!detached.ok) return finish(detached);
+        domainsChanged = true;
       }
     }
 
-    if (refreshed.source_hash === body.sourceHash) {
-      return json({ app: publicApp(refreshed), changed: false });
+    const deploymentChanged = reconciliationDeploymentChanged({
+      currentSourceHash: current.source_hash,
+      currentDeploymentHash: current.deployment_hash,
+      sourceHash,
+      deploymentHash,
+    });
+    let deployment: unknown;
+    if (deploymentChanged) {
+      const deployed = await handleDeployLocked(
+        new Request(req.url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body.deployment),
+        }),
+        env,
+        principal,
+        refreshed,
+      );
+      if (!deployed.ok) return finish(deployed);
+      deployment = await deployed.json();
     }
-    const deployed = await handleDeployLocked(
-      new Request(req.url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body.deployment),
-      }),
-      env,
-      principal,
-      refreshed,
-    );
-    if (!deployed.ok) return deployed;
-    await env.CONTROL_DB.prepare("UPDATE apps SET source_hash=?,managed_by='git',updated_at=? WHERE id=?")
-      .bind(body.sourceHash, Date.now(), refreshed.id).run();
-    return json({ app: publicApp((await getAppById(env, refreshed.id))!), changed: true, deployment: await deployed.json() });
+    await applyPolicy();
+    const sourceChanged = current.source_hash !== sourceHash;
+    await env.CONTROL_DB.prepare(
+      "UPDATE apps SET source_hash=?,deployment_hash=?,managed_by='git',updated_at=? WHERE id=?",
+    ).bind(sourceHash, deploymentHash, Date.now(), refreshed.id).run();
+    const result = (await getAppById(env, refreshed.id))!;
+      return finish(json({
+        app: publicApp(result),
+        changed: sourceChanged || policyChanged || resourcesChanged || domainsChanged || deploymentChanged,
+        policyChanged: policyChanged || resourcesChanged || domainsChanged,
+        deploymentChanged,
+        ...(deployment ? { deployment } : {}),
+      }));
+    } catch (error) {
+      return finish(json({ error: `reconciliation failed: ${error instanceof Error ? error.message : error}` }, 500));
+    }
   });
 }
 
@@ -988,28 +1294,48 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
     ctx.waitUntil(env.CONTROL_DB.prepare("UPDATE tokens SET last_used_at=? WHERE id=?").bind(Date.now(), principal.tokenId).run());
   }
   if (url.pathname === "/api/session" && req.method === "DELETE") return signOut(req, env);
-  if (url.pathname === "/api/me" && req.method === "GET") return json({ user: principal.user });
+  if (url.pathname === "/api/me" && req.method === "GET") {
+    const teams = await activeTeamsFor(env, principal);
+    return json({
+      user: principal.user,
+      teams,
+      defaultTeamId: teams[0]?.id ?? null,
+      platformOwner: isPlatformOwner(principal),
+    });
+  }
   if (url.pathname === "/api/verify" && req.method === "GET") return json({ ok: true, user: principal.user, appId: principal.appId ?? null });
+  const organizationResponse = await handleOrganizationApi(req, env, principal, url);
+  if (organizationResponse) return organizationResponse;
   const reconcileMatch = url.pathname.match(/^\/api\/reconcile\/apps\/([^/]+)$/);
   if (reconcileMatch) return handleReconcileApp(req, env, principal, decodeURIComponent(reconcileMatch[1]!));
   if (url.pathname === "/api/archived" && req.method === "GET") {
-    const statement = isPlatformOwner(principal)
-      ? env.CONTROL_DB.prepare("SELECT * FROM apps WHERE archived_at IS NOT NULL ORDER BY archived_at DESC")
-      : env.CONTROL_DB.prepare("SELECT * FROM apps WHERE archived_at IS NOT NULL AND owner_id=? ORDER BY archived_at DESC").bind(principal.user.id);
-    const archived = await statement.all<AppRow>();
-    return json({ apps: archived.results.map((app) => ({ ...publicApp(app), archivedAt: app.archived_at, recoveryUntil: app.archived_at! + RESOURCE_GRACE_MS })) });
+    const archived = (await listAccessibleApps(env, principal, { includeArchived: true }))
+      .filter((app) => app.archived_at !== null)
+      .sort((left, right) => right.archived_at! - left.archived_at!);
+    return json({
+      apps: archived.map((app) => {
+        const role = roleFromRank(app.effective_rank);
+        return {
+          ...publicApp(app),
+          role,
+          permissions: permissionsFor(app, role),
+          archivedAt: app.archived_at,
+          recoveryUntil: app.archived_at! + RESOURCE_GRACE_MS,
+        };
+      }),
+    });
   }
   const restoreMatch = url.pathname.match(/^\/api\/archived\/([^/]+)\/restore$/);
   if (restoreMatch && req.method === "POST") {
     const app = await getAppIncludingArchived(env, decodeURIComponent(restoreMatch[1]!));
-    if (!app?.archived_at || !canDestroy(app, principal)) return json({ error: "app not found" }, 404);
+    if (!app?.archived_at || !(await canDestroy(env, app, principal))) return json({ error: "app not found" }, 404);
     const body = await req.json().catch(() => ({})) as { confirm?: string };
     if (body.confirm !== app.slug) return json({ error: `confirm recovery with {"confirm":"${app.slug}"}` }, 400);
     if (Date.now() - app.archived_at >= RESOURCE_GRACE_MS) return json({ error: "app recovery window has expired" }, 410);
     await env.CONTROL_DB.prepare(
       "UPDATE apps SET archived_at=NULL,d1_delete_after=NULL,r2_delete_after=NULL,updated_at=? WHERE id=?",
     ).bind(Date.now(), app.id).run();
-    await audit(env, principal.user.id, "app.restored", app.id);
+    await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.restored" });
     return json({ app: publicApp((await getAppById(env, app.id))!) });
   }
   if (principal.appId) {
@@ -1021,59 +1347,36 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
   }
 
   if (url.pathname === "/api/apps" && req.method === "GET") {
-    if (principal.appId) {
-      const app = await getAppById(env, principal.appId);
-      return json({ apps: app ? [await publicAppFor(env, app, principal)] : [] });
+    const teamId = url.searchParams.get("teamId") || undefined;
+    let apps = await listAccessibleApps(env, principal, { teamId });
+    const folderId = url.searchParams.get("folderId");
+    if (folderId === "root") apps = apps.filter((app) => app.folder_id === null);
+    else if (folderId) apps = apps.filter((app) => app.folder_id === folderId);
+    const query = (url.searchParams.get("q") || "").trim().toLowerCase();
+    if (query) apps = apps.filter((app) => `${app.name}\n${app.slug}\n${app.description}`.toLowerCase().includes(query));
+    const audience = url.searchParams.get("audience");
+    if (audience && ["restricted", "team", "public"].includes(audience)) {
+      apps = apps.filter((app) => visibilityToAudience(app.visibility) === audience);
     }
-    const { results } = await env.CONTROL_DB.prepare(
-      `SELECT a.*,m.role AS current_role FROM apps a
-       LEFT JOIN app_members m ON m.app_id=a.id AND m.user_id=?
-       WHERE a.archived_at IS NULL AND (a.visibility IN ('team','public') OR a.owner_id=? OR m.user_id IS NOT NULL)
-       ORDER BY a.updated_at DESC LIMIT 500`,
-    ).bind(principal.user.id, principal.user.id).all<AppRow & { current_role: string | null }>();
-    return json({ apps: results.map((app) => ({
-      ...publicApp(app),
-      permissions: {
-        manage: isPlatformOwner(principal) || app.owner_id === principal.user.id || app.current_role === "editor",
-        destroy: canDestroy(app, principal),
-      },
-    })) });
+    const roleFilter = url.searchParams.get("role");
+    if (roleFilter === "viewer" || roleFilter === "editor" || roleFilter === "owner") {
+      apps = apps.filter((app) => roleFromRank(app.effective_rank) === roleFilter);
+    }
+    const sort = url.searchParams.get("sort") || "updated";
+    const direction = url.searchParams.get("direction") === "asc" ? 1 : -1;
+    apps.sort((left, right) => {
+      if (sort === "name") return direction * left.name.localeCompare(right.name);
+      if (sort === "created") return direction * (left.created_at - right.created_at);
+      return direction * (left.updated_at - right.updated_at);
+    });
+    return json({ apps: await listedApps(env, apps) });
   }
   if (url.pathname === "/api/apps" && req.method === "POST") return handleCreateApp(req, env, principal);
 
   if (url.pathname === "/api/manage/apps" && req.method === "GET") {
     if (principal.tokenId) return json({ error: "session authentication required" }, 403);
-    type ManagementRow = AppRow & {
-      owner_name: string | null;
-      owner_email: string | null;
-      member_role: string | null;
-      manifest_json: string | null;
-    };
-    const statement = isPlatformOwner(principal)
-      ? env.CONTROL_DB.prepare(
-        `SELECT a.*,u.name owner_name,u.email owner_email,NULL member_role,d.manifest_json
-         FROM apps a JOIN users u ON u.id=a.owner_id
-         LEFT JOIN deployments d ON d.app_id=a.id AND d.version=a.active_version
-         WHERE a.archived_at IS NULL ORDER BY a.updated_at DESC LIMIT 500`,
-      )
-      : env.CONTROL_DB.prepare(
-        `SELECT a.*,u.name owner_name,u.email owner_email,m.role member_role,d.manifest_json
-         FROM apps a JOIN users u ON u.id=a.owner_id
-         LEFT JOIN app_members m ON m.app_id=a.id AND m.user_id=?
-         LEFT JOIN deployments d ON d.app_id=a.id AND d.version=a.active_version
-         WHERE a.archived_at IS NULL AND (a.owner_id=? OR m.role='editor')
-         ORDER BY a.updated_at DESC LIMIT 500`,
-      ).bind(principal.user.id, principal.user.id);
-    const { results } = await statement.all<ManagementRow>();
-    return json({
-      platformOwner: isPlatformOwner(principal),
-      apps: results.map((app) => ({
-        ...publicApp(app),
-        owner: { name: app.owner_name, email: app.owner_email },
-        components: manifestComponents(app.manifest_json),
-        permissions: { manage: true, destroy: canDestroy(app, principal) },
-      })),
-    });
+    const apps = (await listAccessibleApps(env, principal)).filter((app) => app.effective_rank >= 2);
+    return json({ platformOwner: isPlatformOwner(principal), apps: await listedApps(env, apps) });
   }
 
   if (url.pathname === "/api/tokens" && req.method === "GET") {
@@ -1088,7 +1391,7 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
     const body = await req.json().catch(() => ({})) as { name?: string; appId?: string };
     if (body.appId) {
       const app = await getAppById(env, body.appId);
-      if (!app || !(await canManage(env, app, principal))) return json({ error: "app not found" }, 404);
+      if (!app || !(await appPermissions(env, app, principal)).modifySecrets) return json({ error: "app not found" }, 404);
     }
     const token = await mintToken(env, principal.user.id, body.name || "agent", body.appId || null);
     return json({ token: { id: token.id, name: token.name, prefix: token.prefix, secret: token.secret, createdAt: token.createdAt } }, 201);
@@ -1107,64 +1410,103 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
   const app = await getAppById(env, match[1]);
   if (!app) return json({ error: "app not found" }, 404);
   const tail = match[2] || "";
+  const effective = await effectiveAppAccess(env, app, principal.user);
+  if (!effective.role || (principal.appId && principal.appId !== app.id)) return json({ error: "app not found" }, 404);
+  const permissions = permissionsFor(app, effective.role);
 
   if (!tail && req.method === "GET") {
-    if (!(await canManage(env, app, principal))) return json({ error: "app not found" }, 404);
+    // Viewers may open an app and read its topology, but deployment internals and the
+    // audit trail stay with the people who can change the app.
+    const editor = roleAtLeast(effective.role, "editor");
     const { results: deploymentRows } = await env.CONTROL_DB.prepare(
       `SELECT d.id,d.version,d.created_by,d.created_at,d.status,d.worker_key IS NOT NULL has_worker,
        d.manifest_json,u.name created_by_name,u.email created_by_email
        FROM deployments d LEFT JOIN users u ON u.id=d.created_by
        WHERE d.app_id=? ORDER BY d.version DESC LIMIT 50`,
     ).bind(app.id).all<Record<string, unknown>>();
-    const deployments = deploymentRows.map(({ manifest_json, ...deployment }) => ({
-      ...deployment,
-      manifest: typeof manifest_json === "string" ? JSON.parse(manifest_json) : null,
-    }));
-    const { results: secrets } = await env.CONTROL_DB.prepare(
+    const activeManifestJson = deploymentRows.find((row) => Number(row.version) === app.active_version)?.manifest_json;
+    const deployments = editor
+      ? deploymentRows.map(({ manifest_json, ...deployment }) => ({
+        ...deployment,
+        manifest: typeof manifest_json === "string" ? JSON.parse(manifest_json) : null,
+      }))
+      : deploymentRows.map(({ version, status, created_at }) => ({ version, status, created_at }));
+    const { results: secretRows } = await env.CONTROL_DB.prepare(
       "SELECT name,updated_at FROM app_secrets WHERE app_id=? ORDER BY name",
-    ).bind(app.id).all();
-    const { results: auditRows } = await env.CONTROL_DB.prepare(
-      `SELECT l.id,l.action,l.detail,l.created_at,u.name user_name,u.email user_email
-       FROM audit_log l LEFT JOIN users u ON u.id=l.user_id
-       WHERE l.app_id=? ORDER BY l.created_at DESC LIMIT 100`,
-    ).bind(app.id).all<{ id: string; action: string; detail: string | null; created_at: number; user_name: string | null; user_email: string | null }>();
-    const audit = auditRows.map(({ detail, ...entry }) => ({
-      ...entry,
-      detail: detail ? JSON.parse(detail) : null,
-    }));
+    ).bind(app.id).all<{ name: string; updated_at: number }>();
+    let activity: unknown[] = [];
+    if (editor) {
+      const { results: auditRows } = await env.CONTROL_DB.prepare(
+        `SELECT l.id,l.action,l.detail,l.created_at,u.name user_name,u.email user_email
+         FROM audit_log l LEFT JOIN users u ON u.id=l.user_id
+         WHERE l.app_id=? ORDER BY l.created_at DESC LIMIT 100`,
+      ).bind(app.id).all<{ id: string; action: string; detail: string | null; created_at: number; user_name: string | null; user_email: string | null }>();
+      activity = auditRows.map(({ detail, ...entry }) => ({ ...entry, detail: detail ? JSON.parse(detail) : null }));
+    }
     const { results: domains } = await env.CONTROL_DB.prepare(
       "SELECT hostname,status,error,created_at,updated_at FROM app_domains WHERE app_id=? ORDER BY hostname",
-    ).bind(app.id).all();
+    ).bind(app.id).all<{ hostname: string; status: string; error: string | null; created_at: number; updated_at: number }>();
     const { results: schedules } = await env.CONTROL_DB.prepare(
       "SELECT id,expression,next_run_at,last_run_at,last_status,last_error FROM app_schedules WHERE app_id=? ORDER BY expression",
-    ).bind(app.id).all();
-    return json({ app: await publicAppFor(env, app, principal), deployments, secrets, domains, schedules, audit });
+    ).bind(app.id).all<{ id: string; expression: string; next_run_at: number; last_run_at: number | null; last_status: string | null; last_error: string | null }>();
+    const visibleDomains = editor ? domains : domains.map(({ error: _error, ...domain }) => domain);
+    const visibleSchedules = editor ? schedules : schedules.map(({ last_error: _error, ...schedule }) => schedule);
+    return json({
+      app: { ...publicApp(app), role: effective.role, permissions },
+      access: await appAccessDetails(env, app, principal),
+      deployments,
+      secrets: permissions.modifySecrets ? secretRows : secretRows.map(({ name }) => ({ name })),
+      domains: visibleDomains,
+      schedules: visibleSchedules,
+      activity,
+      resources: buildResourceTopology({
+        app,
+        manifestJson: typeof activeManifestJson === "string" ? activeManifestJson : null,
+        domains,
+        schedules,
+        configuredSecrets: secretRows.map(({ name }) => name),
+      }),
+    });
   }
-  if (!(await canManage(env, app, principal))) return json({ error: "app not found" }, 404);
-  if (req.method !== "GET" && app.managed_by === "git" && !tail.startsWith("secrets/")) {
-    return json({ error: "app is managed by git; update its apps/ directory and run reconciliation" }, 409);
+  if (tail === "access" && req.method === "GET") return json({ access: await appAccessDetails(env, app, principal) });
+  if (tail === "access" && req.method === "PUT") return handleSetAppAccess(req, env, principal, app);
+  if (tail === "folder" && req.method === "PATCH") return handleSetAppFolder(req, env, principal, app);
+  if (tail.startsWith("secrets/") && req.method === "PUT") {
+    if (!permissions.modifySecrets) return json({ error: "editor access required" }, 403);
+    return handleSetSecret(req, env, principal, app, decodeURIComponent(tail.slice("secrets/".length)));
+  }
+  if (app.managed_by === "git" && req.method !== "GET") {
+    return json({ error: "app is managed by git; update its myslop.json and run reconciliation" }, 409);
   }
   if (tail === "adopt" && req.method === "POST") return handleAdoptResources(req, env, principal, app);
-  if (tail === "domains" && req.method === "POST") return handleAddDomain(req, env, principal, app);
+  if (tail === "domains" && req.method === "POST") {
+    if (!permissions.modifyRuntime) return json({ error: "editor access required" }, 403);
+    return handleAddDomain(req, env, principal, app);
+  }
   if (tail.startsWith("domains/") && req.method === "DELETE") {
+    if (!permissions.modifyRuntime) return json({ error: "editor access required" }, 403);
     return handleDeleteDomain(env, principal, app, decodeURIComponent(tail.slice("domains/".length)));
   }
   if (!tail && req.method === "DELETE") return handleDestroyApp(req, env, principal, app);
   if (tail === "prune" && req.method === "POST") return handlePruneApp(req, env, principal, app);
-  if (tail === "deployments" && req.method === "POST") return handleDeploy(req, env, principal, app);
-  if (tail === "rollback" && req.method === "POST") return handleRollback(req, env, principal, app);
-  if (tail.startsWith("secrets/") && req.method === "PUT") {
-    return handleSetSecret(req, env, principal, app, decodeURIComponent(tail.slice("secrets/".length)));
+  if (tail === "deployments" && req.method === "POST") {
+    if (!permissions.modifyRuntime) return json({ error: "editor access required" }, 403);
+    return handleDeploy(req, env, principal, app);
+  }
+  if (tail === "rollback" && req.method === "POST") {
+    if (!permissions.modifyRuntime) return json({ error: "editor access required" }, 403);
+    return handleRollback(req, env, principal, app);
   }
   if (!tail && req.method === "PATCH") {
-    const body = await req.json().catch(() => ({})) as { name?: string; description?: string; visibility?: string };
-    const visibility = body.visibility ?? app.visibility;
-    if (!["private", "team", "public"].includes(visibility)) return json({ error: "invalid visibility" }, 400);
+    if (!permissions.modifyMetadata) return json({ error: "editor access required" }, 403);
+    const body = await req.json().catch(() => ({})) as { name?: string; description?: string };
     const name = String(body.name ?? app.name).trim().slice(0, 100);
     const description = String(body.description ?? app.description).trim().slice(0, 500);
-    await env.CONTROL_DB.prepare("UPDATE apps SET name=?,description=?,visibility=?,updated_at=? WHERE id=?")
-      .bind(name, description, visibility, Date.now(), app.id).run();
-    return json({ app: await publicAppFor(env, { ...app, name, description, visibility: visibility as AppRow["visibility"] }, principal) });
+    if (!name) return json({ error: "app name is required" }, 400);
+    await env.CONTROL_DB.prepare("UPDATE apps SET name=?,description=?,updated_at=? WHERE id=?")
+      .bind(name, description, Date.now(), app.id).run();
+    await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.metadata.updated", detail: { name, description } });
+    return json({ app: await publicAppFor(env, { ...app, name, description }, principal) });
   }
   return json({ error: "not found" }, 404);
 }
@@ -1215,7 +1557,7 @@ async function sweepUnusedResources(env: Env): Promise<void> {
       if (!manifest.capabilities.database && app.d1_id && app.d1_delete_after && app.d1_delete_after <= Date.now()) {
         await removeDatabase(env, app);
       }
-      await audit(env, "system", "app.resources_swept", app.id);
+      await audit(env, { actorId: "system", teamId: app.team_id, appId: app.id, action: "app.resources_swept" });
     } catch (error) {
       console.error("resource sweep failed", { appId: candidate.id, error });
     } finally {
@@ -1267,7 +1609,7 @@ async function appForHostname(env: Env, hostname: string): Promise<AppRow | null
   ).bind(hostname).first<AppRow>();
 }
 
-export function appRequestHeaders(req: Request, app: AppRow, user: User | null): Headers {
+export function appRequestHeaders(req: Request, app: AppRow, user: User | null, role: AppRole | null = null): Headers {
   const headers = new Headers(req.headers);
   for (const name of [...headers.keys()]) {
     const lower = name.toLowerCase();
@@ -1281,6 +1623,7 @@ export function appRequestHeaders(req: Request, app: AppRow, user: User | null):
       headers.set("x-myslop-user-id", user.id);
       if (user.email) headers.set("x-myslop-user-email", user.email);
       if (user.name) headers.set("x-myslop-user-name", user.name);
+      if (role) headers.set("x-myslop-app-role", role);
     }
   }
   return headers;
@@ -1291,7 +1634,8 @@ async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Respo
   const app = await appForHostname(env, url.hostname);
   if (!app || !app.active_version) return new Response("app not found\n", { status: 404 });
   const user = app.visibility === "public" ? null : await getSessionUser(req, env);
-  if (!(await canView(env, app, user))) {
+  const role = await effectiveAppRole(env, app, user);
+  if (!role) {
     const wantsJson = req.headers.get("accept")?.includes("application/json") || req.headers.has("authorization");
     if (wantsJson) return json({ error: "unauthorized" }, 401);
     const returnTo = encodeURIComponent(url.toString());
@@ -1313,7 +1657,7 @@ async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Respo
   }
 
   if (deployment.worker_key && deployment.worker_name) {
-    const headers = appRequestHeaders(req, app, user);
+    const headers = appRequestHeaders(req, app, user, role);
     const manifest = parseResolvedManifest(JSON.parse(deployment.manifest_json));
     const worker = env.DISPATCHER.get(deployment.worker_name, {}, {
       limits: { cpuMs: 10_000, subRequests: 1_000 },
@@ -1366,7 +1710,7 @@ export default {
     if (url.pathname === "/schema/v1.json") {
       return json(MANIFEST_SCHEMA, 200, { "cache-control": "public, max-age=3600" });
     }
-    if (url.pathname === "/" || url.pathname === "/dashboard" || url.pathname === "/setup") {
+    if (isDashboardPath(url.pathname)) {
       return new Response(dashboardHtml as unknown as string, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     }
     return new Response("not found\n", { status: 404 });

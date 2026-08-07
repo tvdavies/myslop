@@ -23,6 +23,7 @@ export interface AppArtifact {
     migrations: AppMigration[];
   };
   sourceHash: string;
+  deploymentHash: string;
 }
 
 async function directoryExists(path: string): Promise<boolean> {
@@ -101,6 +102,7 @@ export async function createAppArtifact(root: string, options: { suppressMigrati
     migrations: migrations.length > 0,
   });
   const deployment = { manifest, assets, ...(worker ? { worker } : {}), migrations };
+  const deploymentHash = await sha256Hex(JSON.stringify(stable(deployment)));
   const sourceHash = await sha256Hex(JSON.stringify(stable({ app, deployment })));
-  return { app, deployment, sourceHash };
+  return { app, deployment, sourceHash, deploymentHash };
 }

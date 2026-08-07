@@ -30,6 +30,51 @@ export interface User {
   platform_role: "member" | "owner";
 }
 
+export type TeamRole = "member" | "admin";
+export type TeamMemberStatus = "active" | "suspended";
+export type AppAudience = "restricted" | "team" | "public";
+export type AppRole = "viewer" | "editor" | "owner";
+
+export interface TeamRow {
+  id: string;
+  slug: string;
+  name: string;
+  allowed_email_domain: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface TeamMembershipRow {
+  team_id: string;
+  user_id: string;
+  role: TeamRole;
+  status: TeamMemberStatus;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface FolderRow {
+  id: string;
+  team_id: string;
+  parent_id: string | null;
+  slug: string;
+  name: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface TeamGroupRow {
+  id: string;
+  team_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface AppRow {
   id: string;
   slug: string;
@@ -52,6 +97,9 @@ export interface AppRow {
   source_hash: string | null;
   d1_adopted: number;
   r2_adopted: number;
+  team_id: string;
+  folder_id: string | null;
+  deployment_hash: string | null;
 }
 
 export interface DeploymentRow {

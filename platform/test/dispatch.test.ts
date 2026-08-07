@@ -25,6 +25,9 @@ function app(visibility: AppRow["visibility"]): AppRow {
     source_hash: null,
     d1_adopted: 0,
     r2_adopted: 0,
+    team_id: "team_default",
+    folder_id: null,
+    deployment_hash: null,
   };
 }
 
@@ -43,6 +46,7 @@ describe("app request trust models", () => {
         authorization: "Bearer msf_existing",
         cookie: "sid=existing",
         "x-myslop-user-id": "spoofed",
+        "x-myslop-app-role": "owner",
         "x-myslop-internal-signature": "spoofed",
       },
     }), app("public"), user);
@@ -50,17 +54,19 @@ describe("app request trust models", () => {
     expect(headers.get("cookie")).toBe("sid=existing");
     expect(headers.get("x-myslop-user-id")).toBeNull();
     expect(headers.get("x-myslop-app-id")).toBeNull();
+    expect(headers.get("x-myslop-app-role")).toBeNull();
     expect(headers.get("x-myslop-internal-signature")).toBeNull();
   });
 
   test("team apps strip client credentials and inject verified platform identity", () => {
     const headers = appRequestHeaders(new Request("https://demo.apps.myslop.app/api", {
       headers: { authorization: "Bearer client", cookie: "sid=client", "x-myslop-user-id": "spoofed" },
-    }), app("team"), user);
+    }), app("team"), user, "editor");
     expect(headers.get("authorization")).toBeNull();
     expect(headers.get("cookie")).toBeNull();
     expect(headers.get("x-myslop-app-id")).toBe("app-id");
     expect(headers.get("x-myslop-user-id")).toBe("user-id");
     expect(headers.get("x-myslop-user-email")).toBe("user@example.com");
+    expect(headers.get("x-myslop-app-role")).toBe("editor");
   });
 });
