@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canReconcileApps, reconciliationDeploymentChanged } from "../src/reconcile";
+import { canReconcileApps, hasActiveDomain, reconciliationDeploymentChanged } from "../src/reconcile";
 
 describe("reconciliation deployment hashes", () => {
   test("requires a platform owner and rejects app-scoped credentials", () => {
@@ -8,6 +8,11 @@ describe("reconciliation deployment hashes", () => {
     expect(canReconcileApps({ user, teamId: "team-myslop", tokenId: "token" })).toBe(true);
     expect(canReconcileApps({ user, appId: "app-a", tokenId: "token" })).toBe(false);
     expect(canReconcileApps({ user: { ...user, platform_role: "member" } })).toBe(false);
+  });
+
+  test("only an active desired domain satisfies reconciliation", () => {
+    expect(hasActiveDomain([{ hostname: "files.myslop.app", status: "error" }], "files.myslop.app")).toBe(false);
+    expect(hasActiveDomain([{ hostname: "files.myslop.app", status: "active" }], "files.myslop.app")).toBe(true);
   });
 
   test("bootstraps a deployment hash without redeploying when the legacy source hash matches", () => {

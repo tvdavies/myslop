@@ -61,7 +61,7 @@ import {
 } from "./manifest";
 import { activeTeamsFor, handleOrganizationApi } from "./organization";
 import { buildResourceTopology } from "./resources";
-import { canReconcileApps, reconciliationDeploymentChanged } from "./reconcile";
+import { canReconcileApps, hasActiveDomain, reconciliationDeploymentChanged } from "./reconcile";
 import { acceptEmail, dispatchDueSchedules, reconcileAppSchedules, retryEmailDeliveries } from "./runtime";
 import { encryptSecret, loadAppSecrets } from "./secrets";
 import type { AppAudience, AppRole, AppRow, DeploymentRow, Env, User } from "./types";
@@ -1264,10 +1264,10 @@ async function handleReconcileApp(
     let domainsChanged = false;
     if (body.app?.domains !== undefined) {
       const desiredDomains = new Set(body.app.domains.map(normalizeAppDomain));
-      const domainRows = await env.CONTROL_DB.prepare("SELECT hostname FROM app_domains WHERE app_id=?")
-        .bind(current.id).all<{ hostname: string }>();
+      const domainRows = await env.CONTROL_DB.prepare("SELECT hostname,status FROM app_domains WHERE app_id=?")
+        .bind(current.id).all<{ hostname: string; status: string }>();
       for (const hostname of desiredDomains) {
-        if (domainRows.results.some((row) => row.hostname === hostname)) continue;
+        if (hasActiveDomain(domainRows.results, hostname)) continue;
         const attached = await handleAddDomain(
           new Request(req.url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hostname }) }),
           env,
