@@ -145,7 +145,10 @@ export async function uploadUserWorker(env: Env, options: WorkerUploadOptions): 
     bindings.push({ type: "secret_text", name: secret.name, text: secret.value });
   }
   const migrations = manifest.capabilities.durableObjects.length
-    ? [{ tag: `v${options.workerName}`, new_sqlite_classes: manifest.capabilities.durableObjects.map(({ className }) => className) }]
+    ? {
+      new_tag: `v${options.workerName}`,
+      new_sqlite_classes: manifest.capabilities.durableObjects.map(({ className }) => className),
+    }
     : undefined;
   const metadata = {
     main_module: "worker.mjs",
