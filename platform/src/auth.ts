@@ -124,6 +124,7 @@ export interface Principal {
   user: User;
   tokenId?: string;
   appId?: string | null;
+  teamId?: string | null;
 }
 
 export async function authenticate(req: Request, env: Env): Promise<Principal | null> {
@@ -131,22 +132,29 @@ export async function authenticate(req: Request, env: Env): Promise<Principal | 
   if (bearer.startsWith(TOKEN_PREFIX)) {
     const hash = await sha256Hex(bearer);
     const row = await env.CONTROL_DB.prepare(
-      `SELECT t.id token_id, t.user_id, t.app_id, u.email, u.name, u.picture, u.platform_role
+      `SELECT t.id token_id, t.user_id, t.app_id, t.team_id, u.email, u.name, u.picture, u.platform_role
        FROM tokens t JOIN users u ON u.id=t.user_id
        WHERE t.hash=? AND t.revoked_at IS NULL AND t.expires_at>?`,
-    ).bind(hash, Date.now()).first<{ token_id: string; user_id: string; app_id: string | null; email: string | null; name: string | null; picture: string | null; platform_role: "member" | "owner" }>();
+    ).bind(hash, Date.now()).first<{ token_id: string; user_id: string; app_id: string | null; team_id: string | null; email: string | null; name: string | null; picture: string | null; platform_role: "member" | "owner" }>();
     if (!row) return null;
     return {
       user: { id: row.user_id, email: row.email, name: row.name, picture: row.picture, platform_role: row.platform_role },
       tokenId: row.token_id,
       appId: row.app_id,
+      teamId: row.team_id,
     };
   }
   const user = await getSessionUser(req, env);
   return user ? { user } : null;
 }
 
-export async function mintToken(env: Env, userId: string, name: string, appId: string | null = null) {
+export async function mintToken(
+  env: Env,
+  userId: string,
+  name: string,
+  appId: string | null = null,
+  teamId: string | null = null,
+) {
   const secret = TOKEN_PREFIX + base64url(crypto.getRandomValues(new Uint8Array(32)));
   const token = {
     id: randomHex(8),
@@ -157,9 +165,10 @@ export async function mintToken(env: Env, userId: string, name: string, appId: s
     createdAt: Date.now(),
     expiresAt: Date.now() + TOKEN_TTL_MS,
   };
+  if (appId && teamId) throw new Error("a token cannot be scoped to both an app and a team");
   await env.CONTROL_DB.prepare(
-    "INSERT INTO tokens (id,user_id,app_id,hash,name,prefix,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?)",
-  ).bind(token.id, userId, appId, token.hash, token.name, token.prefix, token.createdAt, token.expiresAt).run();
+    "INSERT INTO tokens (id,user_id,app_id,team_id,hash,name,prefix,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).bind(token.id, userId, appId, teamId, token.hash, token.name, token.prefix, token.createdAt, token.expiresAt).run();
   return token;
 }
 

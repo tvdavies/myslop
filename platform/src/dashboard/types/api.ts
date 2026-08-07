@@ -240,6 +240,7 @@ export interface ApiToken {
   name: string;
   prefix: string;
   app_id: string | null;
+  team_id: string | null;
   created_at: number;
   last_used_at: number | null;
   expires_at: number | null;

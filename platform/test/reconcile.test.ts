@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { canReconcileApps, reconciliationDeploymentChanged } from "../src/reconcile";
 
 describe("reconciliation deployment hashes", () => {
-  test("requires an unscoped platform-owner principal", () => {
+  test("requires a platform owner and rejects app-scoped credentials", () => {
     const user = { id: "owner", email: null, name: null, picture: null, platform_role: "owner" as const };
     expect(canReconcileApps({ user })).toBe(true);
+    expect(canReconcileApps({ user, teamId: "team-myslop", tokenId: "token" })).toBe(true);
     expect(canReconcileApps({ user, appId: "app-a", tokenId: "token" })).toBe(false);
     expect(canReconcileApps({ user: { ...user, platform_role: "member" } })).toBe(false);
   });
