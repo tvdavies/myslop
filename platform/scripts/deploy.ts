@@ -92,7 +92,8 @@ try {
   await Bun.write(generated, JSON.stringify(config, null, 2));
   console.log("Deploying outbound egress policy…");
   await run(["bunx", "wrangler", "deploy", "--config", "wrangler.outbound.jsonc"]);
-  console.log(`Deploying control plane with ${rows.length} app domain${rows.length === 1 ? "" : "s"} preserved…`);
+  const domainCount = apps.length + aliases.length;
+  console.log(`Deploying control plane with ${domainCount} app domain${domainCount === 1 ? "" : "s"} preserved…`);
   await run(["bunx", "wrangler", "deploy", "--config", generated]);
 } finally {
   await unlink(generated).catch(() => undefined);
