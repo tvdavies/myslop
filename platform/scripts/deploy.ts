@@ -42,7 +42,7 @@ async function run(command: string[]): Promise<void> {
   if (code !== 0) throw new Error(`${command.join(" ")} exited ${code}`);
 }
 
-await run(["bun", "scripts/gen-distribution.ts"]);
+await run(["bun", "run", "generate"]);
 
 await d1(`CREATE TABLE IF NOT EXISTS _myslop_control_migrations (
   name TEXT PRIMARY KEY,

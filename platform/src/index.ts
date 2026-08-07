@@ -1,4 +1,11 @@
 import dashboardHtml from "./dashboard.html";
+import {
+  DASHBOARD_CSS,
+  DASHBOARD_CSS_ETAG,
+  DASHBOARD_JS,
+  DASHBOARD_JS_ETAG,
+} from "./dashboard-assets.generated";
+import { serveDashboardAsset, type DashboardAsset } from "./dashboard-assets";
 import skillMd from "./skill.md";
 import cliB64 from "./cli.generated";
 import setupShB64 from "./setup-sh.generated";
@@ -59,6 +66,17 @@ import { acceptEmail, dispatchDueSchedules, reconcileAppSchedules, retryEmailDel
 import { encryptSecret, loadAppSecrets } from "./secrets";
 import type { AppAudience, AppRole, AppRow, DeploymentRow, Env, User } from "./types";
 import { isDashboardPath } from "./ui";
+
+const dashboardAssets = new Map<string, DashboardAsset>([
+  [
+    "/assets/dashboard.js",
+    { body: DASHBOARD_JS, contentType: "text/javascript; charset=utf-8", etag: DASHBOARD_JS_ETAG },
+  ],
+  [
+    "/assets/dashboard.css",
+    { body: DASHBOARD_CSS, contentType: "text/css; charset=utf-8", etag: DASHBOARD_CSS_ETAG },
+  ],
+]);
 
 interface AssetInput {
   path: string;
@@ -1710,6 +1728,8 @@ export default {
     if (url.pathname === "/schema/v1.json") {
       return json(MANIFEST_SCHEMA, 200, { "cache-control": "public, max-age=3600" });
     }
+    const dashboardAsset = dashboardAssets.get(url.pathname);
+    if (dashboardAsset) return serveDashboardAsset(req, dashboardAsset);
     if (isDashboardPath(url.pathname)) {
       return new Response(dashboardHtml as unknown as string, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     }

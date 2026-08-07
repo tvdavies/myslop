@@ -6,3 +6,5 @@ node_modules/
 !.env.example
 .wrangler.deploy-*.json
 .pi-subagents/
+test-results/
+playwright-report/
