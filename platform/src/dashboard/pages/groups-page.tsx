@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { GroupDialog } from "@/components/dialogs/group-dialog";
 import { GroupMembersDialog } from "@/components/dialogs/group-members-dialog";
 import { SimpleConfirmDialog } from "@/components/dialogs/simple-confirm-dialog";
-import { EmptyState, RouteError, RouteLoading } from "@/components/feedback/route-state";
+import { EmptyState, RouteError, TableLoading } from "@/components/feedback/route-state";
 import { PageHeader } from "@/components/page-header";
 import { Panel, PanelHeader } from "@/components/panel";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,7 @@ export function GroupsPage() {
   const [deleting, setDeleting] = React.useState<GroupSummary | null>(null);
   useDocumentTitle("Groups");
 
-  const resource = useRouteResource(`${dashboard.teamId}:${revision}`, (signal) =>
+  const resource = useRouteResource(`groups:${dashboard.teamId}:${revision}`, (signal) =>
     apiRequest<GroupsResponse>(`/api/teams/${encodeURIComponent(dashboard.teamId)}/groups`, { signal }),
   );
   const groups = resource.status === "ready" ? resource.data.groups : [];
@@ -67,7 +67,13 @@ export function GroupsPage() {
         description="Administer reusable access groups in one place."
         action={canAdmin ? <Button onClick={() => setEditing({ open: true, group: null })}><Plus />New group</Button> : undefined}
       />
-      {resource.status === "loading" ? <RouteLoading label="Loading groups…" /> : null}
+      {resource.status === "loading" ? (
+        <TableLoading
+          label="Loading groups…"
+          title="Team groups"
+          headers={["Group", "Members", "Apps", "Updated", ""]}
+        />
+      ) : null}
       {resource.status === "error" ? <RouteError message={resource.error} retry={resource.retry} /> : null}
       {resource.status === "ready" ? (
         <Panel>

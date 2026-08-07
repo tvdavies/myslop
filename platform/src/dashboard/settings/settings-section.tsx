@@ -1,4 +1,5 @@
-import { Panel, PanelBody, PanelHeader } from "@/components/panel";
+import { Panel, PanelBody } from "@/components/panel";
+import { cn } from "@/lib/utils";
 
 export function SettingsSection({ id, title, description, children, danger = false }: {
   id: string;
@@ -8,9 +9,14 @@ export function SettingsSection({ id, title, description, children, danger = fal
   danger?: boolean;
 }) {
   return (
-    <Panel id={id} className={danger ? "settings-section danger-section" : "settings-section"}>
-      <PanelHeader title={title} description={description} />
-      <PanelBody>{children}</PanelBody>
-    </Panel>
+    <section id={id} className={cn("settings-section", danger && "danger-section")}>
+      <header className="settings-section-heading">
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </header>
+      <Panel className="settings-section-card">
+        <PanelBody>{children}</PanelBody>
+      </Panel>
+    </section>
   );
 }

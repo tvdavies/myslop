@@ -3,7 +3,7 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { SimpleConfirmDialog } from "@/components/dialogs/simple-confirm-dialog";
-import { EmptyState, RouteError, RouteLoading } from "@/components/feedback/route-state";
+import { EmptyState, FormLoading, RouteError, TableLoading } from "@/components/feedback/route-state";
 import { FieldBlock } from "@/components/form-controls";
 import { PageHeader } from "@/components/page-header";
 import { Panel, PanelBody, PanelHeader } from "@/components/panel";
@@ -28,7 +28,7 @@ export function TokensPage() {
   const [revoking, setRevoking] = React.useState<ApiToken | null>(null);
   useDocumentTitle("Tokens");
 
-  const resource = useRouteResource(`${dashboard.teamId}:${revision}`, async (signal) => {
+  const resource = useRouteResource(`tokens:${dashboard.teamId}:${revision}`, async (signal) => {
     const [tokens, apps] = await Promise.all([
       apiRequest<TokensResponse>("/api/tokens", { signal }),
       apiRequest<AppsResponse>(`/api/apps?teamId=${encodeURIComponent(dashboard.teamId)}&sort=name&direction=asc`, { signal }),
@@ -84,7 +84,21 @@ export function TokensPage() {
         title="Agent API tokens"
         description="Issue revocable credentials to local machines and agents."
       />
-      {resource.status === "loading" ? <RouteLoading label="Loading tokens…" /> : null}
+      {resource.status === "loading" ? (
+        <>
+          <FormLoading
+            className="mb-3"
+            label="Loading token form…"
+            title="Generate token"
+            description="Use an all-app token or restrict it to one app you can manage."
+          />
+          <TableLoading
+            label="Loading active tokens…"
+            title="Active tokens"
+            headers={["Token", "Scope", "Created", "Last used", ""]}
+          />
+        </>
+      ) : null}
       {resource.status === "error" ? <RouteError message={resource.error} retry={resource.retry} /> : null}
       {resource.status === "ready" ? (
         <>

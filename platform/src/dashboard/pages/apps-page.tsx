@@ -3,7 +3,7 @@ import * as React from "react";
 
 import { AppDialog } from "@/components/dialogs/app-dialog";
 import { AudienceBadge, ResourceLedger, RoleBadge } from "@/components/directory/status";
-import { EmptyState, RouteError, RouteLoading } from "@/components/feedback/route-state";
+import { EmptyState, RouteError, TableLoading } from "@/components/feedback/route-state";
 import { PageHeader } from "@/components/page-header";
 import { Panel } from "@/components/panel";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -81,7 +81,7 @@ export function AppsPage({ route, current }: { route: AppsRoute; current: Dashbo
   const description = routeDescription(route, dashboard.folders, folder);
   useDocumentTitle(title);
 
-  const resource = useRouteResource(`${dashboard.teamId}:${current.pathname}:${current.search}:${revision}`, async (signal) => {
+  const resource = useRouteResource(`apps:${dashboard.teamId}:${current.pathname}:${current.search}:${revision}`, async (signal) => {
     const parameters = new URLSearchParams({ teamId: dashboard.teamId, sort: filters.sort, direction: filters.direction });
     if (route.scope === "root") parameters.set("folderId", "root");
     if (route.scope === "folder") parameters.set("folderId", route.folderId);
@@ -163,7 +163,12 @@ export function AppsPage({ route, current }: { route: AppsRoute; current: Dashbo
           <option value="created-asc">Oldest created</option>
         </NativeSelect>
       </form>
-      {resource.status === "loading" ? <RouteLoading label="Loading apps…" /> : null}
+      {resource.status === "loading" ? (
+        <TableLoading
+          label="Loading apps…"
+          headers={["App", "Resources", "Audience", "Your role", "Updated", ""]}
+        />
+      ) : null}
       {resource.status === "error" ? <RouteError message={resource.error} retry={resource.retry} /> : null}
       {resource.status === "ready" && resource.data.apps.length ? (
         <Panel aria-label="Apps" className="directory-panel">

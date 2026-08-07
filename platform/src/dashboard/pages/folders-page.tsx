@@ -4,7 +4,7 @@ import { toast } from "sonner";
 
 import { FolderDialog } from "@/components/dialogs/folder-dialog";
 import { SimpleConfirmDialog } from "@/components/dialogs/simple-confirm-dialog";
-import { EmptyState, RouteError, RouteLoading } from "@/components/feedback/route-state";
+import { EmptyState, RouteError, TableLoading } from "@/components/feedback/route-state";
 import { PageHeader } from "@/components/page-header";
 import { Panel, PanelHeader } from "@/components/panel";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -63,7 +63,13 @@ export function FoldersPage() {
         description="Keep the app library navigable without changing app addresses."
         action={dashboard.foldersCanAdmin ? <Button onClick={() => setDialog({ open: true, folder: null })}><Plus />New folder</Button> : undefined}
       />
-      {dashboard.foldersLoading ? <RouteLoading label="Loading folders…" /> : null}
+      {dashboard.foldersLoading ? (
+        <TableLoading
+          label="Loading folders…"
+          title="Folder structure"
+          headers={["Name", "Path", "Apps", ""]}
+        />
+      ) : null}
       {dashboard.foldersError ? (
         <RouteError message={dashboard.foldersError} retry={() => void dashboard.refetchFolders().catch(() => undefined)} />
       ) : null}
