@@ -1,0 +1,13 @@
+{
+  "name": "myslop-files",
+  "description": "Skills for files.myslop.app — upload local files and get permanent public URLs.",
+  "owner": { "name": "Tom Davies" },
+  "plugins": [
+    {
+      "name": "file-upload",
+      "source": "./plugins/file-upload",
+      "description": "Upload a local file to files.myslop.app and get a permanent public URL.",
+      "tags": ["files", "upload", "sharing"]
+    }
+  ]
+}
