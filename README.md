@@ -132,7 +132,20 @@ myslop-apps prune hello --confirm hello
 myslop-apps destroy hello --confirm hello
 ```
 
-The raw installable skill is served at `https://apps.myslop.app/skill.md`.
+The raw installable skill is served at `https://apps.myslop.app/skill.md`. It is also included with the Files and Mail skills in the public [Myslop Skills registry](https://github.com/tvdavies/myslop-skills):
+
+```sh
+# Claude Code
+claude plugin marketplace add tvdavies/myslop-skills
+claude plugin install myslop@myslop
+
+# Codex
+codex plugin marketplace add tvdavies/myslop-skills
+codex plugin add myslop@myslop
+
+# Portable Agent Skills installer
+bunx skills add tvdavies/myslop-skills --skill '*' --agent claude-code codex --global --yes
+```
 
 ### Dashboard management
 
