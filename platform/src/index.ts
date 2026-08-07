@@ -820,7 +820,10 @@ async function handleAddDomain(req: Request, env: Env, principal: Principal, app
   } catch {
     const existing = await env.CONTROL_DB.prepare("SELECT app_id,status FROM app_domains WHERE hostname=?").bind(hostname).first<{ app_id: string; status: string }>();
     if (existing?.app_id === app.id && existing.status === "active") return json({ hostname, status: "active" });
-    return json({ error: "domain is already claimed" }, 409);
+    if (existing?.app_id !== app.id) return json({ error: "domain is already claimed" }, 409);
+    await env.CONTROL_DB.prepare(
+      "UPDATE app_domains SET status='pending',error=NULL,updated_at=? WHERE hostname=? AND app_id=?",
+    ).bind(now, hostname, app.id).run();
   }
   try {
     const domain = await attachCustomDomain(env, hostname);

@@ -60,7 +60,14 @@ export async function deleteR2Bucket(env: Env, name: string): Promise<void> {
 export async function attachCustomDomain(env: Env, hostname: string): Promise<{ id: string }> {
   return cf(env, "/workers/domains", {
     method: "PUT",
-    body: JSON.stringify({ hostname, service: "myslop-apps", zone_name: "myslop.app" }),
+    body: JSON.stringify({
+      hostname,
+      service: "myslop-apps",
+      zone_name: "myslop.app",
+      // Alias cutovers are explicit platform-owner operations. Cloudflare
+      // otherwise refuses to move a hostname from the standalone Worker.
+      override_existing_origin: true,
+    }),
   });
 }
 
