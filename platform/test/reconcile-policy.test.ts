@@ -49,6 +49,23 @@ afterEach(() => {
 });
 
 describe("reconciliation policy validation", () => {
+  test("requires and honors an explicit team when more than one is available", async () => {
+    const { database, env, principal } = await fixture();
+    database.exec(`
+      INSERT INTO teams (id,slug,name,allowed_email_domain,created_at,updated_at)
+      VALUES ('team_myslop','myslop','Myslop',NULL,2,2);
+      INSERT INTO team_members (team_id,user_id,role,status,created_at,updated_at)
+      VALUES ('team_myslop','owner','admin','active',2,2);
+    `);
+    const ambiguous = await resolveReconcilePolicy(env, principal, "new-app", {}, null);
+    expect(ambiguous).toBeInstanceOf(Response);
+    expect((ambiguous as Response).status).toBe(400);
+
+    const targeted = await resolveReconcilePolicy(env, principal, "new-app", { teamId: "team_myslop" }, null);
+    expect(targeted).not.toBeInstanceOf(Response);
+    expect((targeted as { teamId: string }).teamId).toBe("team_myslop");
+  });
+
   test("rejects an unknown folder before creating a new app", async () => {
     const { database, env, principal } = await fixture();
     const result = await resolveReconcilePolicy(env, principal, "new-app", {

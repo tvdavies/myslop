@@ -39,17 +39,11 @@ Each direct child of `apps/` is one platform app. Its `myslop.json` can declare 
 
 Deleting a directory does not silently delete its production app. A git-managed app may only be destroyed when the same change adds an exact active confirmation to `apps/DELETIONS.md`.
 
-Secrets are declarations, not repository values. CI fails when a declared secret has not already been provisioned on the platform. Production deployment is manual and scoped (`platform`, `apps`, or `all`); alias reconciliation is a separate `apply_domains` cutover switch and can target Files or Mail independently.
+Secrets are declarations, not repository values. CI fails when a declared secret has not already been provisioned on the platform. App reconciliation requires an explicit `MYSLOP_TEAM` target. The production workflow supports scoped manual cutovers and, once `MYSLOP_CD_ENABLED` is enabled, automatically deploys verified `main` changes with platform health gating before app reconciliation.
 
 ## Deployment safety
 
-Local development and CI validation do not mutate production. These actions require separate explicit approval:
-
-1. creating or pushing the public `tvdavies/myslop` repository;
-2. deploying platform schema, bindings, routes, or runtime changes;
-3. adopting or deleting production D1 databases and R2 buckets;
-4. moving `files.myslop.app`, `mail.myslop.app`, or Email Routing;
-5. archiving any source repository.
+Local development and pull-request validation do not mutate production. Main-branch deployment remains disabled until the production `MYSLOP_CD_ENABLED` variable is explicitly enabled. Resource adoption, custom-domain or Email Routing cutovers, and destructive app confirmations remain separate reviewed operations.
 
 The platform Worker keeps its existing Cloudflare service, dispatch namespace, D1, R2, and outbound-worker identities. The monorepo layout must never create a parallel production platform by accident.
 

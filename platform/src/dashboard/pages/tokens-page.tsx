@@ -41,6 +41,9 @@ export function TokensPage() {
   const appMap = new Map<string, ListedApp>(apps.map((app) => [app.id, app]));
 
   function scopeLabel(token: ApiToken): string {
+    if (token.team_id) {
+      return dashboard.me.teams.find((team) => team.id === token.team_id)?.name || "One team";
+    }
     if (!token.app_id) return "All manageable apps";
     return appMap.get(token.app_id)?.name || "One app";
   }
@@ -51,7 +54,11 @@ export function TokensPage() {
     try {
       const result = await apiRequest<TokenCreationResponse>("/api/tokens", {
         method: "POST",
-        body: { name: name.trim() || "agent", appId: scope || undefined },
+        body: {
+          name: name.trim() || "agent",
+          ...(scope.startsWith("team:") ? { teamId: scope.slice("team:".length) } : {}),
+          ...(scope.startsWith("app:") ? { appId: scope.slice("app:".length) } : {}),
+        },
       });
       setSecret(result.token.secret);
       setName("");
@@ -90,7 +97,7 @@ export function TokensPage() {
             className="mb-3"
             label="Loading token form…"
             title="Generate token"
-            description="Use an all-app token or restrict it to one app you can manage."
+            description="Use an account token or restrict it to the current team or one app."
           />
           <TableLoading
             label="Loading active tokens…"
@@ -103,7 +110,7 @@ export function TokensPage() {
       {resource.status === "ready" ? (
         <>
           <Panel className="mb-3">
-            <PanelHeader title="Generate token" description="Use an all-app token or restrict it to one app you can manage." />
+            <PanelHeader title="Generate token" description="Use an account token or restrict it to the current team or one app." />
             <PanelBody>
               <form onSubmit={createToken}>
                 <div className="form-grid sm:grid-cols-2">
@@ -113,7 +120,10 @@ export function TokensPage() {
                   <FieldBlock label="Scope" htmlFor="token-scope">
                     <NativeSelect className="w-full" id="token-scope" value={scope} onChange={(event) => setScope(event.target.value)}>
                       <option value="">All apps I can manage</option>
-                      {manageable.map((app) => <option key={app.id} value={app.id}>Only {app.name}</option>)}
+                      {dashboard.team.role === "admin" ? (
+                        <option value={`team:${dashboard.teamId}`}>Only {dashboard.team.name}</option>
+                      ) : null}
+                      {manageable.map((app) => <option key={app.id} value={`app:${app.id}`}>Only {app.name}</option>)}
                     </NativeSelect>
                   </FieldBlock>
                 </div>

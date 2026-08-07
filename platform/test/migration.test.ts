@@ -61,3 +61,38 @@ describe("control migration 008", () => {
     }
   });
 });
+
+describe("control migration 009", () => {
+  test("preserves existing tokens and enforces a single optional scope", async () => {
+    const database = new Database(":memory:");
+    try {
+      database.exec(`
+        PRAGMA foreign_keys=ON;
+        CREATE TABLE users (id TEXT PRIMARY KEY);
+        CREATE TABLE teams (id TEXT PRIMARY KEY);
+        CREATE TABLE tokens (
+          id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),app_id TEXT,
+          hash TEXT NOT NULL UNIQUE,name TEXT NOT NULL,prefix TEXT NOT NULL,
+          created_at INTEGER NOT NULL,last_used_at INTEGER,expires_at INTEGER NOT NULL,revoked_at INTEGER
+        );
+        INSERT INTO users VALUES ('owner');
+        INSERT INTO teams VALUES ('team_myslop');
+        INSERT INTO tokens VALUES ('legacy','owner',NULL,'legacy-hash','Legacy','msa_legacy',1,NULL,999,NULL);
+      `);
+      database.exec(await Bun.file(new URL("../control-migrations/009_team_scoped_tokens.sql", import.meta.url)).text());
+
+      expect(database.query("SELECT id,team_id FROM tokens WHERE id='legacy'").get()).toEqual({ id: "legacy", team_id: null });
+      database.exec(`
+        INSERT INTO tokens (id,user_id,app_id,team_id,hash,name,prefix,created_at,expires_at)
+        VALUES ('team','owner',NULL,'team_myslop','team-hash','Team','msa_team',2,999)
+      `);
+      expect(database.query("SELECT team_id FROM tokens WHERE id='team'").get()).toEqual({ team_id: "team_myslop" });
+      expect(() => database.exec(`
+        INSERT INTO tokens (id,user_id,app_id,team_id,hash,name,prefix,created_at,expires_at)
+        VALUES ('invalid','owner','app','team_myslop','invalid-hash','Invalid','msa_invalid',3,999)
+      `)).toThrow("token cannot be scoped to both an app and a team");
+    } finally {
+      database.close();
+    }
+  });
+});

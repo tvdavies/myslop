@@ -362,20 +362,26 @@ async function deleteAppAssets(env: Env, appId: string): Promise<void> {
   throw new Error("asset cleanup limit exceeded");
 }
 
-async function removeDatabase(env: Env, app: AppRow): Promise<void> {
+export async function removeDatabase(env: Env, app: AppRow): Promise<void> {
   if (!app.d1_id) return;
-  await deleteD1(env, app.d1_id);
+  // Adopted databases predate the platform app. Detach them without deleting
+  // their data so a migration can be rolled back safely.
+  if (!app.d1_adopted) await deleteD1(env, app.d1_id);
   await env.CONTROL_DB.prepare(
-    "UPDATE apps SET d1_id=NULL,d1_name=NULL,d1_delete_after=NULL WHERE id=? AND d1_id=?",
+    "UPDATE apps SET d1_id=NULL,d1_name=NULL,d1_adopted=0,d1_delete_after=NULL WHERE id=? AND d1_id=?",
   ).bind(app.id, app.d1_id).run();
 }
 
-async function removeFileStorage(env: Env, app: AppRow): Promise<void> {
+export async function removeFileStorage(env: Env, app: AppRow): Promise<void> {
   if (!app.r2_bucket) return;
-  await emptyAppBucket(env, app);
-  await deleteR2Bucket(env, app.r2_bucket);
+  // Never empty or delete an adopted bucket. Its objects remain available to
+  // the previous Worker until the migration's rollback window closes.
+  if (!app.r2_adopted) {
+    await emptyAppBucket(env, app);
+    await deleteR2Bucket(env, app.r2_bucket);
+  }
   await env.CONTROL_DB.prepare(
-    "UPDATE apps SET r2_bucket=NULL,r2_delete_after=NULL WHERE id=? AND r2_bucket=?",
+    "UPDATE apps SET r2_bucket=NULL,r2_adopted=0,r2_delete_after=NULL WHERE id=? AND r2_bucket=?",
   ).bind(app.id, app.r2_bucket).run();
 }
 
@@ -987,6 +993,7 @@ async function handleSetAppAccess(req: Request, env: Env, principal: Principal, 
 }
 
 interface ReconcileInput {
+  teamId?: string;
   sourceHash?: string;
   deploymentHash?: string;
   app?: { name?: string; description?: string; visibility?: AppRow["visibility"]; folder?: string | null; domains?: string[] };
@@ -1011,9 +1018,23 @@ export async function resolveReconcilePolicy(
   body: ReconcileInput,
   existing: AppRow | null,
 ): Promise<ReconcilePolicy | Response> {
-  const teams = existing ? [] : await activeTeamsFor(env, principal);
-  const teamId = existing?.team_id ?? teams[0]?.id;
-  if (!teamId) return json({ error: "active team membership required" }, 403);
+  const teams = await activeTeamsFor(env, principal);
+  if (existing && body.teamId && existing.team_id !== body.teamId) {
+    return json({ error: "app belongs to a different team" }, 409);
+  }
+  if (existing && principal.teamId && existing.team_id !== principal.teamId) {
+    return json({ error: "app not found in token team" }, 404);
+  }
+  const teamId = existing?.team_id ?? (
+    body.teamId
+      ? teams.find(({ id }) => id === body.teamId)?.id
+      : teams.length === 1 ? teams[0]?.id : undefined
+  );
+  if (!teamId) {
+    return json({
+      error: body.teamId ? "target team is unavailable" : "teamId is required when more than one team is available",
+    }, body.teamId ? 403 : 400);
+  }
   const ownerId = existing?.owner_id ?? principal.user.id;
   let normalized: ResolvedAppManifest;
   try {
@@ -1076,9 +1097,12 @@ async function handleReconcileApp(
   }
   if (!validSlug(slug)) return json({ error: "invalid app slug" }, 400);
   if (req.method === "DELETE") {
-    const body = await req.json().catch(() => ({})) as { confirm?: string };
+    const body = await req.json().catch(() => ({})) as { confirm?: string; teamId?: string };
+    if (!body.teamId) return json({ error: "teamId is required for reconciliation deletion" }, 400);
     const app = await getAppBySlug(env, slug);
     if (!app) return json({ ok: true, deleted: slug });
+    if (app.team_id !== body.teamId) return json({ error: "app belongs to a different team" }, 409);
+    if (principal.teamId && app.team_id !== principal.teamId) return json({ error: "app not found in token team" }, 404);
     if (app.managed_by !== "git") return json({ error: "refusing to delete a manually managed app" }, 409);
     if (body.confirm !== slug) return json({ error: `confirm deletion with {"confirm":"${slug}"}` }, 400);
     return handleDestroyApp(new Request(req.url, { method: "DELETE", body: JSON.stringify(body) }), env, principal, app, true);
@@ -1095,6 +1119,9 @@ async function handleReconcileApp(
   const sourceHash = body.sourceHash;
   const deploymentHash = body.deploymentHash;
   let app = await getAppBySlugIncludingArchived(env, slug);
+  if (app && principal.teamId && app.team_id !== principal.teamId) {
+    return json({ error: "app not found in token team" }, 404);
+  }
   if (app?.archived_at && Date.now() - app.archived_at >= RESOURCE_GRACE_MS) {
     return json({ error: "app recovery window has expired" }, 410);
   }
@@ -1321,7 +1348,15 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
       platformOwner: isPlatformOwner(principal),
     });
   }
-  if (url.pathname === "/api/verify" && req.method === "GET") return json({ ok: true, user: principal.user, appId: principal.appId ?? null });
+  if (url.pathname === "/api/verify" && req.method === "GET") {
+    return json({
+      ok: true,
+      user: principal.user,
+      appId: principal.appId ?? null,
+      teamId: principal.teamId ?? null,
+      features: { teamReconciliation: 1, reviewedResourceAdoption: 1 },
+    });
+  }
   const organizationResponse = await handleOrganizationApi(req, env, principal, url);
   if (organizationResponse) return organizationResponse;
   const reconcileMatch = url.pathname.match(/^\/api\/reconcile\/apps\/([^/]+)$/);
@@ -1400,18 +1435,23 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
   if (url.pathname === "/api/tokens" && req.method === "GET") {
     if (principal.tokenId) return json({ error: "session authentication required" }, 403);
     const { results } = await env.CONTROL_DB.prepare(
-      "SELECT id,name,prefix,app_id,created_at,last_used_at,expires_at FROM tokens WHERE user_id=? AND revoked_at IS NULL ORDER BY created_at DESC",
+      "SELECT id,name,prefix,app_id,team_id,created_at,last_used_at,expires_at FROM tokens WHERE user_id=? AND revoked_at IS NULL ORDER BY created_at DESC",
     ).bind(principal.user.id).all();
     return json({ tokens: results });
   }
   if (url.pathname === "/api/tokens" && req.method === "POST") {
     if (principal.tokenId) return json({ error: "session authentication required" }, 403);
-    const body = await req.json().catch(() => ({})) as { name?: string; appId?: string };
+    const body = await req.json().catch(() => ({})) as { name?: string; appId?: string; teamId?: string };
+    if (body.appId && body.teamId) return json({ error: "choose either an app or team scope" }, 400);
     if (body.appId) {
       const app = await getAppById(env, body.appId);
       if (!app || !(await appPermissions(env, app, principal)).modifySecrets) return json({ error: "app not found" }, 404);
     }
-    const token = await mintToken(env, principal.user.id, body.name || "agent", body.appId || null);
+    if (body.teamId) {
+      const team = (await activeTeamsFor(env, principal)).find(({ id }) => id === body.teamId);
+      if (!team || team.role !== "admin") return json({ error: "team admin access required" }, 403);
+    }
+    const token = await mintToken(env, principal.user.id, body.name || "agent", body.appId || null, body.teamId || null);
     return json({ token: { id: token.id, name: token.name, prefix: token.prefix, secret: token.secret, createdAt: token.createdAt } }, 201);
   }
   if (url.pathname.startsWith("/api/tokens/") && req.method === "DELETE") {
@@ -1429,7 +1469,11 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
   if (!app) return json({ error: "app not found" }, 404);
   const tail = match[2] || "";
   const effective = await effectiveAppAccess(env, app, principal.user);
-  if (!effective.role || (principal.appId && principal.appId !== app.id)) return json({ error: "app not found" }, 404);
+  if (
+    !effective.role ||
+    (principal.appId && principal.appId !== app.id) ||
+    (principal.teamId && principal.teamId !== app.team_id)
+  ) return json({ error: "app not found" }, 404);
   const permissions = permissionsFor(app, effective.role);
 
   if (!tail && req.method === "GET") {

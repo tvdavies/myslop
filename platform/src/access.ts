@@ -118,6 +118,7 @@ export async function effectiveAppRole(env: Env, app: AppRow, user: User | null)
 
 export async function appPermissions(env: Env, app: AppRow, principal: Principal): Promise<AppPermissions> {
   if (principal.appId && principal.appId !== app.id) return permissionsFor(app, null);
+  if (principal.teamId && principal.teamId !== app.team_id) return permissionsFor(app, null);
   return permissionsFor(app, await effectiveAppRole(env, app, principal.user));
 }
 
@@ -146,9 +147,11 @@ export async function listAccessibleApps(
 ): Promise<AppAccessRow[]> {
   const conditions = [options.includeArchived ? "1=1" : "a.archived_at IS NULL"];
   const trailing: unknown[] = [];
-  if (options.teamId) {
+  if (principal.teamId && options.teamId && principal.teamId !== options.teamId) return [];
+  const teamId = options.teamId ?? principal.teamId ?? undefined;
+  if (teamId) {
     conditions.push("a.team_id=?");
-    trailing.push(options.teamId);
+    trailing.push(teamId);
   }
   const appId = options.appId ?? principal.appId ?? undefined;
   if (appId) {

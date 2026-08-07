@@ -123,4 +123,20 @@ describe("app access", () => {
     expect(apps).toHaveLength(3);
     expect(apps.every(({ effective_rank }) => roleFromRank(effective_rank) === "owner")).toBe(true);
   });
+
+  test("team-scoped platform tokens only list apps in their team", async () => {
+    const { database, env } = await fixture();
+    database.exec(`
+      INSERT INTO teams (id,slug,name,created_at,updated_at) VALUES ('other','other','Other',2,2);
+      INSERT INTO apps (id,slug,name,description,owner_id,visibility,worker_name,created_at,updated_at,team_id)
+      VALUES ('other-app','other-app','Other','', 'platform','public','app-other',2,2,'other');
+    `);
+    const principal: Principal = {
+      user: { id: "platform", email: "platform@lleverage.ai", name: "Platform", picture: null, platform_role: "owner" },
+      tokenId: "token",
+      teamId: "team_default",
+    };
+    const apps = await listAccessibleApps(env, principal);
+    expect(apps.map(({ id }) => id).sort()).toEqual(["public", "restricted", "team"]);
+  });
 });

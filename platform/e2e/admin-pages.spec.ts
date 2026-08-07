@@ -14,8 +14,9 @@ const groups = [
   { id: "group-sales", slug: "sales", name: "Sales", description: "Commercial team", memberCount: 4, appCount: 1, createdAt: 1, updatedAt: Date.UTC(2026, 7, 7) },
 ];
 const tokens = [
-  { id: "tok-1", name: "Laptop", prefix: "msa_abc", app_id: null, created_at: Date.UTC(2026, 6, 1), last_used_at: null, expires_at: null },
-  { id: "tok-2", name: "Agent", prefix: "msa_xyz", app_id: "app-1", created_at: Date.UTC(2026, 6, 2), last_used_at: Date.UTC(2026, 7, 1), expires_at: null },
+  { id: "tok-1", name: "Laptop", prefix: "msa_abc", app_id: null, team_id: null, created_at: Date.UTC(2026, 6, 1), last_used_at: null, expires_at: null },
+  { id: "tok-2", name: "Agent", prefix: "msa_xyz", app_id: "app-1", team_id: null, created_at: Date.UTC(2026, 6, 2), last_used_at: Date.UTC(2026, 7, 1), expires_at: null },
+  { id: "tok-3", name: "Team deploy", prefix: "msa_team", app_id: null, team_id: team.id, created_at: Date.UTC(2026, 6, 3), last_used_at: null, expires_at: null },
 ];
 const app = {
   id: "app-1", slug: "commercial-dashboard", name: "Commercial Dashboard", description: "Pipeline",
@@ -140,7 +141,7 @@ test("reuses recent table data when navigating back to a page", async ({ page })
   await expect(page.locator(".table-loading")).toHaveCount(0);
 });
 
-test("tokens page renders scope labels for global and app-scoped tokens", async ({ page }) => {
+test("tokens page renders scope labels for global, team and app-scoped tokens", async ({ page }) => {
   await mock(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/account/tokens");
@@ -148,7 +149,8 @@ test("tokens page renders scope labels for global and app-scoped tokens", async 
   await expect(page.getByRole("heading", { level: 1, name: "Agent API tokens" })).toBeVisible();
   await expect(page.getByRole("cell", { name: "All manageable apps" })).toBeVisible();
   await expect(page.getByRole("cell", { name: "Commercial Dashboard" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: "Never" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "Lleverage", exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "Never" }).first()).toBeVisible();
 
   const tokenName = page.getByLabel("Token name");
   const tokenScope = page.getByLabel("Scope");
@@ -165,7 +167,7 @@ test("tokens page renders scope labels for global and app-scoped tokens", async 
   expect(mobileNameBox).not.toBeNull();
   expect(mobileScopeBox).not.toBeNull();
   expect(mobileScopeBox!.y).toBeGreaterThan(mobileNameBox!.y + mobileNameBox!.height);
-  await expect(page.locator(".mobile-directory .mobile-admin-row")).toHaveCount(2);
+  await expect(page.locator(".mobile-directory .mobile-admin-row")).toHaveCount(3);
   await expect(page.locator(".mobile-directory")).toContainText("All manageable apps");
   await axeClean(page);
 });

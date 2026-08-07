@@ -89,6 +89,26 @@ describe("organization api", () => {
     expect(response?.status).toBe(200);
   });
 
+  test("platform owners can create a team with themselves as an admin", async () => {
+    const { database, env, principal } = await fixture();
+    database.exec("UPDATE users SET platform_role='owner' WHERE id='admin'");
+    const owner: Principal = { ...principal, user: { ...principal.user, platform_role: "owner" } };
+    const response = await organizationRequest(env, owner, "/api/teams", "POST", { slug: "myslop", name: "Myslop" });
+    expect(response?.status).toBe(201);
+    const created = await response!.json() as { team: { id: string } };
+    expect(database.query("SELECT slug,name FROM teams WHERE id=?").get(created.team.id)).toEqual({ slug: "myslop", name: "Myslop" });
+    expect(database.query("SELECT role,status FROM team_members WHERE team_id=? AND user_id='admin'").get(created.team.id))
+      .toEqual({ role: "admin", status: "active" });
+  });
+
+  test("team-scoped tokens cannot reach another team", async () => {
+    const { database, env, principal } = await fixture();
+    database.exec(`INSERT INTO teams (id,slug,name,created_at,updated_at) VALUES ('other','other','Other',2,2)`);
+    const scoped: Principal = { ...principal, tokenId: "token", teamId: "team_default" };
+    expect((await organizationRequest(env, scoped, "/api/teams/team_default/folders"))?.status).toBe(200);
+    expect((await organizationRequest(env, scoped, "/api/teams/other/folders"))?.status).toBe(404);
+  });
+
   test("archived apps still block folder deletion", async () => {
     const { env, principal } = await fixture();
     const blocked = await organizationRequest(env, principal, "/api/teams/team_default/folders/retired", "DELETE");

@@ -27,20 +27,28 @@ function text(value: unknown, maxLength: number): string {
 
 export async function activeTeamsFor(env: Env, principal: Principal): Promise<TeamContext[]> {
   if (principal.user.platform_role === "owner") {
-    const rows = await env.CONTROL_DB.prepare(
-      "SELECT id,slug,name,'admin' role FROM teams ORDER BY name",
-    ).all<TeamContext>();
+    const statement = env.CONTROL_DB.prepare(
+      `SELECT id,slug,name,'admin' role FROM teams
+       ${principal.teamId ? "WHERE id=?" : ""} ORDER BY name`,
+    );
+    const rows = principal.teamId
+      ? await statement.bind(principal.teamId).all<TeamContext>()
+      : await statement.all<TeamContext>();
     return rows.results;
   }
-  const rows = await env.CONTROL_DB.prepare(
+  const statement = env.CONTROL_DB.prepare(
     `SELECT t.id,t.slug,t.name,m.role
      FROM team_members m JOIN teams t ON t.id=m.team_id
-     WHERE m.user_id=? AND m.status='active' ORDER BY t.name`,
-  ).bind(principal.user.id).all<TeamContext>();
+     WHERE m.user_id=? AND m.status='active' ${principal.teamId ? "AND t.id=?" : ""} ORDER BY t.name`,
+  );
+  const rows = principal.teamId
+    ? await statement.bind(principal.user.id, principal.teamId).all<TeamContext>()
+    : await statement.bind(principal.user.id).all<TeamContext>();
   return rows.results;
 }
 
 async function teamAccess(env: Env, principal: Principal, teamId: string, admin = false): Promise<TeamContext | null> {
+  if (principal.teamId && principal.teamId !== teamId) return null;
   if (principal.user.platform_role === "owner") {
     const team = await env.CONTROL_DB.prepare("SELECT id,slug,name,'admin' role FROM teams WHERE id=?")
       .bind(teamId).first<TeamContext>();
@@ -353,6 +361,36 @@ export async function handleOrganizationApi(
   principal: Principal,
   url: URL,
 ): Promise<Response | null> {
+  if (url.pathname === "/api/teams" && req.method === "POST") {
+    if (principal.user.platform_role !== "owner" || principal.appId || principal.teamId) {
+      return json({ error: "unscoped platform owner required" }, 403);
+    }
+    const body = await req.json().catch(() => ({})) as { slug?: string; name?: string; allowedEmailDomain?: string | null };
+    if (!validSlug(body.slug)) return json({ error: "team slug must be 3-48 lowercase letters, numbers, and hyphens" }, 400);
+    const name = text(body.name, 100);
+    if (!name) return json({ error: "team name is required" }, 400);
+    const allowedEmailDomain = body.allowedEmailDomain ? text(body.allowedEmailDomain, 253).toLowerCase() : null;
+    if (allowedEmailDomain && !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(allowedEmailDomain)) {
+      return json({ error: "allowed email domain is invalid" }, 400);
+    }
+    const id = randomHex(12);
+    const now = Date.now();
+    try {
+      await env.CONTROL_DB.batch([
+        env.CONTROL_DB.prepare(
+          "INSERT INTO teams (id,slug,name,allowed_email_domain,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+        ).bind(id, body.slug, name, allowedEmailDomain, now, now),
+        env.CONTROL_DB.prepare(
+          "INSERT INTO team_members (team_id,user_id,role,status,created_at,updated_at) VALUES (?,?,'admin','active',?,?)",
+        ).bind(id, principal.user.id, now, now),
+      ]);
+    } catch (error) {
+      if (isUniqueViolation(error)) return json({ error: "team slug is already in use" }, 409);
+      throw error;
+    }
+    await audit(env, { actorId: principal.user.id, teamId: id, action: "team.created", detail: { slug: body.slug, name } });
+    return json({ team: { id, slug: body.slug, name, role: "admin" } }, 201);
+  }
   if (!url.pathname.startsWith("/api/teams/")) return null;
   // Organization management is never in scope for a token bound to a single app.
   if (principal.appId) return json({ error: "token is scoped to one app" }, 403);

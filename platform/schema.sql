@@ -99,15 +99,18 @@ CREATE TABLE IF NOT EXISTS tokens (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
   app_id TEXT,
+  team_id TEXT REFERENCES teams(id) ON DELETE CASCADE,
   hash TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   prefix TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   last_used_at INTEGER,
   expires_at INTEGER NOT NULL,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  CHECK (app_id IS NULL OR team_id IS NULL)
 );
 CREATE INDEX IF NOT EXISTS tokens_user ON tokens(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS tokens_team ON tokens(team_id, revoked_at, expires_at);
 
 CREATE TABLE IF NOT EXISTS apps (
   id TEXT PRIMARY KEY,
