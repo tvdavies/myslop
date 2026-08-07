@@ -42,11 +42,25 @@ A database-backed app needs `worker.ts` and migrations. The database is inferred
 
 ## Optional `myslop.json`
 
-Declare only capabilities that source layout cannot reveal:
+Git-managed apps may declare organization, access, and capabilities that source layout cannot reveal:
 
 ```json
 {
   "$schema": "https://apps.myslop.app/schema/v1.json",
+  "version": 1,
+  "app": {
+    "name": "Commercial Dashboard",
+    "folder": "business-apps"
+  },
+  "access": {
+    "audience": "restricted",
+    "users": [
+      { "email": "owner@lleverage.ai", "role": "owner" }
+    ],
+    "groups": [
+      { "slug": "sales", "role": "editor" }
+    ]
+  },
   "capabilities": {
     "files": true,
     "secrets": ["HUBSPOT_TOKEN", "ANTHROPIC_API_KEY"],
@@ -54,6 +68,8 @@ Declare only capabilities that source layout cannot reveal:
   }
 }
 ```
+
+`app.folder` and group slugs must already exist in the app's team. Audiences are `public`, `team`, or `restricted`. User roles are viewer/editor/owner; group roles are viewer/editor. Group membership is centrally managed and never duplicated in the manifest. Omitting folder/access preserves existing policy during reconciliation.
 
 Supported capability fields:
 
@@ -105,13 +121,15 @@ Use Web APIs and Worker-compatible packages. Do not use Node servers such as Exp
 
 ## Ownership and lifecycle
 
-- Owners and editors can update metadata, deploy, rotate secrets, and roll back.
-- Team visibility grants view access only; it does not grant edit rights.
-- App owners and platform owners can prune stored resources or destroy an app.
-- Global agent tokens inherit the issuing user's role, including platform-owner access. App-scoped tokens remain restricted to their assigned app.
+- Viewers can open an app and inspect read-only settings; deployment manifests and activity history require editor access.
+- Editors can update manual app metadata/runtime configuration, deploy, rotate secrets, and roll back.
+- Owners can additionally move a manual app, change access assignments, prune resources, archive, and delete it.
+- The highest role granted by primary ownership, individual assignment, reusable group assignment, audience baseline, or platform-owner override wins.
+- Git-managed metadata, access, folder, runtime, and destruction policy must be changed in `myslop.json`; configured secrets remain operational state.
+- Global agent tokens inherit the issuing user's effective role. App-scoped tokens remain restricted to their assigned app and cannot call team management endpoints.
 - `prune` and `destroy` require the slug to be repeated with `--confirm`.
-- Destroy removes every Worker version, static artifact, D1 database, all R2 objects and the bucket, secrets, tokens, DNS/TLS domain, deployments, and operational control records. A minimal immutable audit tombstone is retained.
+- Destroy removes every runtime version, static artifact, database, storage object and container, secrets, tokens, domain, deployments, and operational control records. A minimal immutable audit tombstone is retained.
 
 ## Security
 
-Apps default to team-only. Do not implement a second password gate. Treat injected identity headers as authoritative because the dispatcher strips client-supplied copies. Still enforce row ownership in app code when records should be private to individual users.
+Apps default to Team audience. Do not implement a second password gate. For Team and Restricted apps, treat `x-myslop-user-id`, `x-myslop-user-email`, `x-myslop-user-name`, and `x-myslop-app-role` as authoritative because the dispatcher strips client-supplied copies. Public apps receive no synthesized identity and retain their own cookies and bearer-token authentication. Still enforce row ownership in app code when records should be private to individual users.

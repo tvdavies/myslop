@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseResolvedManifest, resolveManifest } from "../src/manifest";
+import { normalizeAppManifest, parseResolvedManifest, resolveManifest } from "../src/manifest";
 
 describe("capability manifest", () => {
   test("a static page needs no runtime resources", () => {
@@ -107,5 +107,66 @@ describe("capability manifest", () => {
       capabilities: { database: true, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
     });
     expect(manifest.capabilities.database).toBe(true);
+  });
+
+  test("normalizes folder and access policy deterministically", () => {
+    expect(normalizeAppManifest({
+      app: { visibility: "private", folder: "business-apps" },
+      access: {
+        audience: "restricted",
+        users: [
+          { email: " ZED@LLEVERAGE.AI ", role: "viewer" },
+          { email: "amy@lleverage.ai", role: "owner" },
+        ],
+        groups: [
+          { slug: "sales-team", role: "viewer" },
+          { slug: "developers", role: "editor" },
+        ],
+      },
+    })).toMatchObject({
+      folder: "business-apps",
+      access: {
+        audience: "restricted",
+        users: [
+          { email: "amy@lleverage.ai", role: "owner" },
+          { email: "zed@lleverage.ai", role: "viewer" },
+        ],
+        groups: [
+          { slug: "developers", role: "editor" },
+          { slug: "sales-team", role: "viewer" },
+        ],
+      },
+    });
+  });
+
+  test("derives visibility from the access audience when the legacy field is omitted", () => {
+    expect(normalizeAppManifest({ access: { audience: "restricted" } }).visibility).toBe("private");
+    expect(normalizeAppManifest({ access: { audience: "public" } }).visibility).toBe("public");
+    expect(normalizeAppManifest({ app: { name: "Demo" } }).visibility).toBe("team");
+  });
+
+  test("keeps legacy manifests free of implicit folder and access fields", () => {
+    const app = normalizeAppManifest({ app: { visibility: "public" } });
+    expect(Object.hasOwn(app, "folder")).toBe(false);
+    expect(Object.hasOwn(app, "access")).toBe(false);
+  });
+
+  test("rejects conflicting or invalid access declarations", () => {
+    expect(() => normalizeAppManifest({
+      app: { visibility: "public" },
+      access: { audience: "restricted" },
+    })).toThrow("must agree");
+    expect(() => normalizeAppManifest({
+      access: { audience: "team", groups: [{ slug: "developers", role: "owner" as "editor" }] },
+    })).toThrow("group role");
+    expect(() => normalizeAppManifest({
+      access: {
+        audience: "team",
+        users: [
+          { email: "same@lleverage.ai", role: "viewer" },
+          { email: "SAME@LLEVERAGE.AI", role: "editor" },
+        ],
+      },
+    })).toThrow("duplicates");
   });
 });

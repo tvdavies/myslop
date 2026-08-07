@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { basename, dirname, resolve } from "node:path";
-import { createAppArtifact } from "../platform/src/artifact";
+import { createAppArtifact, type AppArtifact } from "../platform/src/artifact";
 import { validSlug } from "../platform/src/core";
+import type { SourceManifest } from "../platform/src/manifest";
 
 const ROOT = resolve(import.meta.dir, "..");
 const APPS_DIR = resolve(ROOT, "apps");
@@ -11,6 +12,7 @@ export interface RemoteApp {
   slug: string;
   managedBy: "manual" | "git";
   sourceHash: string | null;
+  deploymentHash?: string | null;
 }
 
 export interface AppPlan {
@@ -52,6 +54,28 @@ export function planApps(localSlugs: string[], remoteApps: RemoteApp[], confirma
     plans.push({ slug: app.slug, action: "delete" });
   }
   return plans;
+}
+
+export function reconciliationBody(
+  source: AppArtifact,
+  sourceManifest: SourceManifest,
+  slug: string,
+  applyDomains: boolean,
+) {
+  return {
+    sourceHash: source.sourceHash,
+    deploymentHash: source.deploymentHash,
+    app: {
+      name: source.app.name || slug,
+      description: source.app.description,
+      ...(sourceManifest.app?.visibility !== undefined ? { visibility: source.app.visibility } : {}),
+      ...(source.app.folder !== undefined ? { folder: source.app.folder } : {}),
+      ...(applyDomains ? { domains: source.app.domains } : {}),
+    },
+    ...(source.app.access ? { access: source.app.access } : {}),
+    resources: source.app.resources,
+    deployment: source.deployment,
+  };
 }
 
 class PlatformApi {
@@ -102,7 +126,7 @@ export async function syncApps(options: {
     }
     const existing = remote.get(plan.slug);
     if (existing && existing.managedBy !== "git") throw new Error(`refusing to reconcile ${plan.slug}: it is manually managed`);
-    const sourceManifest = await Bun.file(resolve(path, "myslop.json")).json() as { app?: { resources?: { database?: unknown } } };
+    const sourceManifest = await Bun.file(resolve(path, "myslop.json")).json() as SourceManifest;
     const source = await createAppArtifact(path, {
       suppressMigrations: Boolean(sourceManifest.app?.resources?.database) && (!existing || !existing.sourceHash),
     });
@@ -112,17 +136,7 @@ export async function syncApps(options: {
     if (options.dryRun) continue;
     const result = await api.request<{ changed: boolean }>(`/api/reconcile/apps/${encodeURIComponent(plan.slug)}`, {
       method: "PUT",
-      body: JSON.stringify({
-        sourceHash: source.sourceHash,
-        app: {
-          name: source.app.name || plan.slug,
-          description: source.app.description,
-          visibility: source.app.visibility,
-          ...(options.applyDomains ? { domains: source.app.domains } : {}),
-        },
-        resources: source.app.resources,
-        deployment: source.deployment,
-      }),
+      body: JSON.stringify(reconciliationBody(source, sourceManifest, plan.slug, options.applyDomains === true)),
     });
     plan.action = result.changed ? (existing ? "update" : "create") : "unchanged";
   }

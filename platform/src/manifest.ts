@@ -1,4 +1,4 @@
-import { validBindingName } from "./core";
+import { validBindingName, validSlug } from "./core";
 import { parseCron } from "./cron";
 
 const RESERVED_RUNTIME_BINDINGS = ["DB", "FILES", "MYSLOP_APP_ID", "MYSLOP_APP_ORIGIN", "MYSLOP_INTERNAL_SECRET"];
@@ -19,6 +19,12 @@ export const MANIFEST_SCHEMA = {
         name: { type: "string", minLength: 1, maxLength: 100 },
         description: { type: "string", maxLength: 500 },
         visibility: { enum: ["private", "team", "public"] },
+        folder: {
+          anyOf: [
+            { type: "string", pattern: "^[a-z][a-z0-9-]{1,46}[a-z0-9]$" },
+            { type: "null" },
+          ],
+        },
         domains: {
           type: "array",
           maxItems: 10,
@@ -40,6 +46,40 @@ export const MANIFEST_SCHEMA = {
               additionalProperties: false,
               required: ["name"],
               properties: { name: { type: "string", minLength: 1 } },
+            },
+          },
+        },
+      },
+    },
+    access: {
+      type: "object",
+      additionalProperties: false,
+      required: ["audience"],
+      properties: {
+        audience: { enum: ["restricted", "team", "public"] },
+        users: {
+          type: "array",
+          maxItems: 100,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["email", "role"],
+            properties: {
+              email: { type: "string", format: "email", maxLength: 254 },
+              role: { enum: ["viewer", "editor", "owner"] },
+            },
+          },
+        },
+        groups: {
+          type: "array",
+          maxItems: 100,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["slug", "role"],
+            properties: {
+              slug: { type: "string", pattern: "^[a-z][a-z0-9-]{1,46}[a-z0-9]$" },
+              role: { enum: ["viewer", "editor"] },
             },
           },
         },
@@ -87,10 +127,33 @@ export interface AppResourcesManifest {
   bucket?: { name: string };
 }
 
+export interface AccessUserManifest {
+  email: string;
+  role: "viewer" | "editor" | "owner";
+}
+
+export interface AccessGroupManifest {
+  slug: string;
+  role: "viewer" | "editor";
+}
+
+export interface AccessManifest {
+  audience: "restricted" | "team" | "public";
+  users?: AccessUserManifest[];
+  groups?: AccessGroupManifest[];
+}
+
+export interface ResolvedAccessManifest {
+  audience: "restricted" | "team" | "public";
+  users: AccessUserManifest[];
+  groups: AccessGroupManifest[];
+}
+
 export interface AppManifest {
   name?: string;
   description?: string;
   visibility?: "private" | "team" | "public";
+  folder?: string | null;
   domains?: string[];
   resources?: AppResourcesManifest;
 }
@@ -101,6 +164,8 @@ export interface ResolvedAppManifest {
   visibility: "private" | "team" | "public";
   domains: string[];
   resources: AppResourcesManifest;
+  folder?: string | null;
+  access?: ResolvedAccessManifest;
 }
 
 export interface SourceDurableObject {
@@ -112,6 +177,7 @@ export interface SourceManifest {
   $schema?: string;
   version?: 1;
   app?: AppManifest;
+  access?: AccessManifest;
   capabilities?: {
     database?: boolean;
     files?: boolean;
@@ -177,16 +243,69 @@ export function normalizeAppDomain(value: string): string {
   return hostname;
 }
 
+// `restricted` is the manifest-facing name for the stored `private` visibility.
+function audienceForVisibility(visibility: AppManifest["visibility"]): AccessManifest["audience"] | undefined {
+  return visibility === "private" ? "restricted" : visibility;
+}
+
+function visibilityForAudience(audience: AccessManifest["audience"]): NonNullable<AppManifest["visibility"]> {
+  return audience === "restricted" ? "private" : audience;
+}
+
+function normalizeAccessManifest(value: unknown, legacyVisibility: AppManifest["visibility"]): ResolvedAccessManifest | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("access must be an object");
+  const access = value as Partial<AccessManifest>;
+  const unknown = Object.keys(access).find((key) => !["audience", "users", "groups"].includes(key));
+  if (unknown) throw new Error(`unknown access field: ${unknown}`);
+  if (!access.audience || !["restricted", "team", "public"].includes(access.audience)) throw new Error("access.audience is invalid");
+  const legacyAudience = audienceForVisibility(legacyVisibility);
+  if (legacyAudience && legacyAudience !== access.audience) throw new Error("app.visibility and access.audience must agree");
+  const users = access.users ?? [];
+  if (!Array.isArray(users) || users.length > 100) throw new Error("access.users must contain at most 100 assignments");
+  const normalizedUsers = users.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("access.users entries must be objects");
+    const unknownUser = Object.keys(entry).find((key) => !["email", "role"].includes(key));
+    if (unknownUser) throw new Error(`unknown access user field: ${unknownUser}`);
+    const email = String(entry.email ?? "").trim().toLowerCase();
+    if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error(`invalid access user email: ${entry.email}`);
+    if (!["viewer", "editor", "owner"].includes(entry.role)) throw new Error("access user role is invalid");
+    return { email, role: entry.role } as AccessUserManifest;
+  }).sort((left, right) => left.email.localeCompare(right.email));
+  if (new Set(normalizedUsers.map(({ email }) => email)).size !== normalizedUsers.length) throw new Error("access.users must not contain duplicates");
+  const groups = access.groups ?? [];
+  if (!Array.isArray(groups) || groups.length > 100) throw new Error("access.groups must contain at most 100 assignments");
+  const normalizedGroups = groups.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("access.groups entries must be objects");
+    const unknownGroup = Object.keys(entry).find((key) => !["slug", "role"].includes(key));
+    if (unknownGroup) throw new Error(`unknown access group field: ${unknownGroup}`);
+    const slug = String(entry.slug ?? "").trim().toLowerCase();
+    if (!validSlug(slug)) throw new Error(`invalid access group slug: ${entry.slug}`);
+    if (!["viewer", "editor"].includes(entry.role)) throw new Error("access group role is invalid");
+    return { slug, role: entry.role } as AccessGroupManifest;
+  }).sort((left, right) => left.slug.localeCompare(right.slug));
+  if (new Set(normalizedGroups.map(({ slug }) => slug)).size !== normalizedGroups.length) throw new Error("access.groups must not contain duplicates");
+  return { audience: access.audience, users: normalizedUsers, groups: normalizedGroups };
+}
+
 export function normalizeAppManifest(source: SourceManifest): ResolvedAppManifest {
   const app = source.app ?? {};
-  const unknown = Object.keys(app).find((key) => !["name", "description", "visibility", "domains", "resources"].includes(key));
+  const unknown = Object.keys(app).find((key) => !["name", "description", "visibility", "folder", "domains", "resources"].includes(key));
   if (unknown) throw new Error(`unknown app field: ${unknown}`);
   const name = app.name === undefined ? "" : String(app.name).trim();
   const description = app.description === undefined ? "" : String(app.description).trim();
-  const visibility = app.visibility ?? "team";
   if (name.length > 100) throw new Error("app.name must be at most 100 characters");
   if (description.length > 500) throw new Error("app.description must be at most 500 characters");
-  if (!["private", "team", "public"].includes(visibility)) throw new Error("app.visibility is invalid");
+  if (app.visibility !== undefined && !["private", "team", "public"].includes(app.visibility)) {
+    throw new Error("app.visibility is invalid");
+  }
+  const folder = app.folder === undefined ? undefined : app.folder;
+  if (folder !== undefined && folder !== null && (typeof folder !== "string" || !validSlug(folder))) {
+    throw new Error("app.folder must be a folder slug or null");
+  }
+  const access = normalizeAccessManifest(source.access, app.visibility);
+  // An explicit access block is the source of truth once the legacy visibility field is omitted.
+  const visibility = app.visibility ?? (access ? visibilityForAudience(access.audience) : "team");
   const rawDomains = app.domains ?? [];
   if (!Array.isArray(rawDomains) || rawDomains.length > 10 || !rawDomains.every((domain) => typeof domain === "string")) {
     throw new Error("app.domains must contain at most 10 hostnames");
@@ -210,6 +329,8 @@ export function normalizeAppManifest(source: SourceManifest): ResolvedAppManifes
       ...(resources.database ? { database: { id: resources.database.id.trim(), name: resources.database.name.trim() } } : {}),
       ...(resources.bucket ? { bucket: { name: resources.bucket.name.trim() } } : {}),
     },
+    ...(folder !== undefined ? { folder: folder === null ? null : folder.trim().toLowerCase() } : {}),
+    ...(access ? { access } : {}),
   };
 }
 
@@ -261,7 +382,7 @@ export function resolveManifest(source: unknown, detected: Detection): ResolvedM
   if (source === null || source === undefined) source = {};
   if (typeof source !== "object" || Array.isArray(source)) throw new Error("myslop.json must contain an object");
   const input = source as SourceManifest;
-  const unknownTopLevel = Object.keys(input).find((key) => !["$schema", "version", "app", "capabilities"].includes(key));
+  const unknownTopLevel = Object.keys(input).find((key) => !["$schema", "version", "app", "access", "capabilities"].includes(key));
   if (unknownTopLevel) throw new Error(`unknown myslop.json field: ${unknownTopLevel}`);
   if (input.$schema !== undefined && typeof input.$schema !== "string") throw new Error("$schema must be a string");
   if (input.version !== undefined && input.version !== 1) throw new Error("unsupported myslop.json version");

@@ -32,6 +32,14 @@ export function safeAssetPath(value: unknown): value is string {
   return parts.every((part) => part !== "" && part !== "." && part !== "..");
 }
 
+export function isUniqueViolation(error: unknown): boolean {
+  return String(error instanceof Error ? error.message : error).includes("UNIQUE");
+}
+
+export function sqlPlaceholders(count: number): string {
+  return Array.from({ length: count }, () => "?").join(",");
+}
+
 export function randomHex(bytes: number): string {
   return [...crypto.getRandomValues(new Uint8Array(bytes))]
     .map((byte) => byte.toString(16).padStart(2, "0"))

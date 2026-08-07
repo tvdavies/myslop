@@ -33,11 +33,25 @@ my-app/
   myslop.json               # optional non-obvious capabilities
 ```
 
-Most apps need no manifest. Static assets, Workers, and databases with migrations are inferred. Use `myslop.json` only for capabilities source layout cannot reveal:
+Most apps need no manifest. Static assets, runtimes, and databases with migrations are inferred. Use `myslop.json` for organizational policy and capabilities that source layout cannot reveal:
 
 ```json
 {
   "$schema": "https://apps.myslop.app/schema/v1.json",
+  "version": 1,
+  "app": {
+    "name": "Commercial Dashboard",
+    "folder": "business-apps"
+  },
+  "access": {
+    "audience": "restricted",
+    "users": [
+      { "email": "owner@lleverage.ai", "role": "owner" }
+    ],
+    "groups": [
+      { "slug": "sales", "role": "editor" }
+    ]
+  },
   "capabilities": {
     "files": true,
     "secrets": ["HUBSPOT_TOKEN"],
@@ -45,6 +59,8 @@ Most apps need no manifest. Static assets, Workers, and databases with migration
   }
 }
 ```
+
+Folder and group slugs refer to centrally managed objects in the app's team. `access.audience` is the source of truth for sharing; the legacy `app.visibility` field is optional and must agree with the declared audience when both are present. Git-managed app metadata, folder placement, audience, and assignments are read-only in the dashboard; group membership remains centrally editable. Omitting `app.folder` or `access` preserves an existing app's policy during reconciliation.
 
 Worker bindings are capability-dependent:
 
@@ -59,7 +75,7 @@ interface Env {
 
 Removing a capability from a later deployment detaches its binding immediately and starts a seven-day recovery period. Re-adding it cancels deletion. An hourly control-plane sweep removes expired D1/R2 resources; the owner can remove them immediately with `prune`.
 
-Verified user identity is injected into requests as `x-myslop-user-id`, `x-myslop-user-email`, and `x-myslop-user-name`. Client-supplied versions of these headers are stripped by the dispatcher.
+Verified user identity and effective app role are injected into non-public app requests as `x-myslop-user-id`, `x-myslop-user-email`, `x-myslop-user-name`, and `x-myslop-app-role`. Client-supplied versions of all `x-myslop-*` headers are stripped by the dispatcher. Public apps keep their own cookies and bearer-token authentication and receive no synthesized platform identity.
 
 ## Local checks
 
@@ -152,22 +168,29 @@ bunx skills add tvdavies/myslop-skills --skill '*' --agent claude-code codex --g
 
 ### Dashboard management
 
-App cards are direct links to the apps. Use **Manage apps** in the header for the separate operational view: active capability badges, resource status, metadata, deployment and rollback history, audit history, pruning, and deletion. App owners and editors can manage their assigned apps; platform owners can manage every team app, including private apps. Destructive actions stay disabled until an app or platform owner types the exact app slug.
+The dashboard is a compact team directory with nested organizational folders, search, audience/role filters, and separate **Open** and **Settings** actions. Settings is a full page with overview, access, connected resources, deployments, secrets, activity, and destructive operations. Team admins maintain the folder tree, people, reusable groups, and group membership centrally.
+
+The resources view uses product concepts—App / runtime, Database, Storage, Schedules, Domain, Email, and Secrets—rather than exposing provider resource names as the primary interface.
 
 ### Permissions
 
-- Owners and editors can update metadata, deploy, rotate secrets, and roll back.
-- Team/public visibility grants viewing only.
-- App owners and platform owners can prune data resources or destroy an app.
-- Agent tokens carry the issuing user's permissions. App-scoped tokens are restricted to one app.
-- Destructive CLI commands require an exact repeated slug.
+Apps have a Public, Team, or Restricted audience and one effective role per person. The highest applicable role from primary ownership, direct assignment, group assignment, audience baseline, or platform-owner override wins.
+
+- Viewers can open an app and inspect its read-only settings, connected resources, and access explanation; deployment manifests and activity history stay with editors and owners.
+- Editors can update manual app metadata and runtime configuration, deploy, rotate secrets, and roll back.
+- Owners can additionally move a manual app, change its audience and assignments, prune resources, archive, and delete it.
+- Group assignments grant viewer or editor; owner assignments are individual only.
+- Folders organize apps but do not inherit or grant access.
+- Git-managed metadata, access, folder, deployment, and destruction policy must be changed in `myslop.json`; permitted editors/owners may still configure secrets.
+- Agent tokens carry the issuing user's effective permissions. App-scoped tokens are restricted to one app and cannot reach team management endpoints.
+- Destructive actions and CLI commands require the exact app slug.
 
 `destroy` removes all immutable Worker versions and static assets, the app D1 database, every object in its R2 bucket and the bucket itself, encrypted secret records, app-scoped tokens, custom DNS/TLS domain, deployments, and operational control records. A minimal immutable audit tombstone is retained for security and accountability.
 
 ## Current MVP boundaries
 
 - Worker runtime is JavaScript/TypeScript and Web API compatible. Python/FastAPI functions require a port or a future container runtime.
-- App sharing currently supports private, whole-team, or public. The schema supports explicit members; the sharing UI/API is the next slice.
+- App sharing supports Public, Team, or Restricted audiences plus direct user and reusable group assignments. Folder placement is organizational only and has no inherited permissions.
 - Accounts are capped at 25 apps and apps at 100 retained deployments in this MVP.
 - Outbound `fetch()` is denied by default. Declare exact hostnames in `capabilities.network`; the platform outbound Worker enforces the allowlist.
 - Logs and scheduled jobs are not exposed in the control-plane UI yet.

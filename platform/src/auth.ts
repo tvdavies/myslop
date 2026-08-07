@@ -95,6 +95,14 @@ export async function exchangeSession(req: Request, env: Env, ctx: ExecutionCont
     `INSERT INTO users (id, email, name, picture, created_at) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET email=excluded.email, name=excluded.name, picture=excluded.picture`,
   ).bind(claims.pairwise_sub, claims.email ?? null, claims.name ?? null, claims.picture ?? null, now).run();
+  const team = await env.CONTROL_DB.prepare(
+    "SELECT id FROM teams WHERE lower(allowed_email_domain)=? ORDER BY created_at LIMIT 1",
+  ).bind(domain).first<{ id: string }>();
+  if (!team) return json({ error: "your organization is not configured" }, 403);
+  await env.CONTROL_DB.prepare(
+    `INSERT OR IGNORE INTO team_members (team_id,user_id,role,status,created_at,updated_at)
+     SELECT ?,id,CASE WHEN platform_role='owner' THEN 'admin' ELSE 'member' END,'active',?,? FROM users WHERE id=?`,
+  ).bind(team.id, now, now, claims.pairwise_sub).run();
   const id = randomHex(32);
   await env.CONTROL_DB.prepare(
     "INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
