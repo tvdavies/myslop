@@ -1,0 +1,23 @@
+{
+  "name": "myslop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "platform",
+    "apps/*"
+  ],
+  "scripts": {
+    "generate": "bun --cwd platform run distribute && bun --cwd apps/files run gen && bun --cwd apps/mail run gen",
+    "test": "bun --cwd platform test && bun --cwd apps/files test && bun --cwd apps/mail test && bun test scripts",
+    "typecheck": "bun --cwd platform run typecheck && bun --cwd apps/files run typecheck && bun --cwd apps/mail run typecheck && bunx tsc --noEmit",
+    "check": "bun run generate && bun run test && bun run typecheck",
+    "sync-apps": "bun scripts/sync-apps.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "@types/bun": "latest",
+    "typescript": "latest",
+    "wrangler": "latest"
+  }
+}
