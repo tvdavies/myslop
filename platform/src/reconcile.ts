@@ -4,6 +4,13 @@ export function canReconcileApps(principal: Principal): boolean {
   return principal.user.platform_role === "owner" && !principal.appId;
 }
 
+export function hasActiveDomain(
+  domains: { hostname: string; status: string }[],
+  hostname: string,
+): boolean {
+  return domains.some((domain) => domain.hostname === hostname && domain.status === "active");
+}
+
 export function reconciliationDeploymentChanged(input: {
   currentSourceHash: string | null;
   currentDeploymentHash: string | null;
