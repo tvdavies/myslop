@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
   picture TEXT,
   created_at INTEGER NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS users_verified_email ON users(email COLLATE NOCASE) WHERE email IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,              -- random 128-bit hex, set as HttpOnly cookie
