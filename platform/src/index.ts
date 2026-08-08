@@ -9,7 +9,16 @@ import { serveDashboardAsset, type DashboardAsset } from "./dashboard-assets";
 import skillMd from "./skill.md";
 import cliB64 from "./cli.generated";
 import setupShB64 from "./setup-sh.generated";
-import { authenticate, exchangeSession, getSessionUser, mintToken, signOut, type Principal } from "./auth";
+import {
+  authenticate,
+  consumeAppSessionExchange,
+  createAppSessionExchange,
+  exchangeSession,
+  getSessionUser,
+  mintToken,
+  signOut,
+  type Principal,
+} from "./auth";
 import {
   appPermissions,
   audienceToVisibility,
@@ -27,6 +36,7 @@ import {
   attachCustomDomain,
   createD1,
   createR2Bucket,
+  customDomainOwner,
   getD1,
   getR2Bucket,
   deleteCustomDomain,
@@ -48,7 +58,12 @@ import {
   sha256Hex,
   sqlPlaceholders,
   validBindingName,
+  validAppReturnUrl,
   validSlug,
+  sessionCookie,
+  SESSION_COOKIE,
+  LEGACY_SESSION_COOKIE,
+  SESSION_TTL_MS,
 } from "./core";
 import {
   MANIFEST_SCHEMA,
@@ -66,6 +81,20 @@ import { acceptEmail, dispatchDueSchedules, reconcileAppSchedules, retryEmailDel
 import { encryptSecret, loadAppSecrets } from "./secrets";
 import type { AppAudience, AppRole, AppRow, DeploymentRow, Env, User } from "./types";
 import { isDashboardPath } from "./ui";
+import {
+  appSlugFromHostname,
+  appUrl,
+  LEGACY_PLATFORM_HOST,
+  legacyAppSlugFromHostname,
+  PLATFORM_APEX_HOST,
+  PLATFORM_HOST,
+  PLATFORM_ORIGIN,
+  PASSTHROUGH_HOSTS,
+  platformRedirect,
+  RESERVED_APP_SLUGS,
+  slugSuggestions,
+  validSlugSyntax,
+} from "./domains";
 
 const dashboardAssets = new Map<string, DashboardAsset>([
   [
@@ -94,10 +123,6 @@ interface DeployInput {
   worker?: string;
   assets?: AssetInput[];
   migrations?: MigrationInput[];
-}
-
-function appUrl(slug: string): string {
-  return `https://${slug}.apps.myslop.app`;
 }
 
 function publicApp(app: AppRow) {
@@ -175,7 +200,7 @@ async function canDestroy(env: Env, app: AppRow, principal: Principal): Promise<
 function ensureCsrf(req: Request, principal: Principal): Response | null {
   if (principal.tokenId || req.method === "GET" || req.method === "HEAD") return null;
   const origin = req.headers.get("origin");
-  return origin === "https://apps.myslop.app" || origin === "http://localhost:8787"
+  return origin === PLATFORM_ORIGIN || origin === "http://localhost:8787"
     ? null
     : json({ error: "bad origin" }, 403);
 }
@@ -215,7 +240,8 @@ async function handleCreateAppLocked(req: Request, env: Env, principal: Principa
   } catch {
     return json({ error: "invalid body" }, 400);
   }
-  if (!validSlug(body.slug)) return json({ error: "slug must be 3-48 lowercase letters, numbers, and hyphens" }, 400);
+  if (!validSlugSyntax(body.slug)) return json({ error: "slug must be 3-48 lowercase letters, numbers, and hyphens" }, 400);
+  if (RESERVED_APP_SLUGS.has(body.slug)) return json({ error: "slug is reserved", code: "slug_reserved" }, 409);
   const name = String(body.name || body.slug).trim().slice(0, 100);
   const description = String(body.description || "").trim().slice(0, 500);
   const visibility = body.audience ? audienceToVisibility(body.audience) : body.visibility || "team";
@@ -238,6 +264,18 @@ async function handleCreateAppLocked(req: Request, env: Env, principal: Principa
   const now = Date.now();
   const workerName = `app-${id}`;
   try {
+    const domainOwner = await customDomainOwner(env, `${body.slug}.myslop.app`);
+    if (domainOwner) {
+      return json({
+        error: "slug is unavailable",
+        code: "slug_unavailable",
+        suggestions: slugSuggestions(body.slug, team.slug, id.slice(0, 6)),
+      }, 409);
+    }
+  } catch (error) {
+    return json({ error: `could not verify hostname availability: ${error instanceof Error ? error.message : error}` }, 502);
+  }
+  try {
     await env.CONTROL_DB.batch([
       env.CONTROL_DB.prepare(
         `INSERT INTO apps (id,slug,name,description,owner_id,visibility,worker_name,created_at,updated_at,team_id,folder_id)
@@ -248,18 +286,14 @@ async function handleCreateAppLocked(req: Request, env: Env, principal: Principa
       ).bind(id, principal.user.id, "owner", principal.user.id, now, now),
     ]);
   } catch (error) {
-    return json({ error: isUniqueViolation(error) ? "slug already exists" : "could not create app" }, 409);
-  }
-
-  let customDomain: { id: string } | null = null;
-  try {
-    customDomain = await attachCustomDomain(env, `${body.slug}.apps.myslop.app`);
-    await env.CONTROL_DB.prepare("UPDATE apps SET custom_domain_id=? WHERE id=?")
-      .bind(customDomain.id, id).run();
-  } catch (error) {
-    if (customDomain) await deleteCustomDomain(env, customDomain.id).catch((cleanup) => recordOrphan(env, "domain", customDomain!.id, id, cleanup));
-    await env.CONTROL_DB.prepare("DELETE FROM apps WHERE id=?").bind(id).run();
-    return json({ error: `domain provisioning failed: ${error instanceof Error ? error.message : error}` }, 502);
+    if (isUniqueViolation(error) || String(error).includes("hostname") || String(error).includes("slug")) {
+      return json({
+        error: "slug is unavailable",
+        code: "slug_unavailable",
+        suggestions: slugSuggestions(body.slug, team.slug, id.slice(0, 6)),
+      }, 409);
+    }
+    return json({ error: "could not create app" }, 500);
   }
 
   const app = await getAppById(env, id);
@@ -515,8 +549,8 @@ async function handleDeployLocked(req: Request, env: Env, principal: Principal, 
   const now = Date.now();
   try {
     await env.CONTROL_DB.prepare(
-      `INSERT INTO deployments (id,app_id,version,asset_prefix,manifest_json,status,created_by,created_at)
-       SELECT ?,?,COALESCE(MAX(version),0)+1,'',?,'pending',?,? FROM deployments WHERE app_id=?`,
+      `INSERT INTO deployments (id,app_id,version,asset_prefix,manifest_json,internal_secret_version,status,created_by,created_at)
+       SELECT ?,?,COALESCE(MAX(version),0)+1,'',?,2,'pending',?,? FROM deployments WHERE app_id=?`,
     ).bind(deploymentId, app.id, JSON.stringify(manifest), principal.user.id, now, app.id).run();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -609,6 +643,7 @@ async function rebindDeploymentSecrets(env: Env, app: AppRow, deployment: Deploy
     source: await source.text(),
     manifest,
     secrets,
+    internalSecretVersion: deployment.internal_secret_version === 2 ? 2 : 1,
   });
 }
 
@@ -1328,7 +1363,7 @@ async function handleReconcileApp(
 async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
   if (url.pathname === "/api/session" && req.method === "POST") {
     const origin = req.headers.get("origin");
-    if (origin !== "https://apps.myslop.app" && origin !== "http://localhost:8787") {
+    if (origin !== PLATFORM_ORIGIN && origin !== "http://localhost:8787") {
       return json({ error: "bad origin" }, 403);
     }
     return exchangeSession(req, env, ctx);
@@ -1359,6 +1394,12 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
       teamId: principal.teamId ?? null,
       features: { teamReconciliation: 1, reviewedResourceAdoption: 1 },
     });
+  }
+  if (url.pathname === "/api/app-session-exchange" && req.method === "POST") {
+    if (principal.tokenId) return json({ error: "session authentication required" }, 403);
+    const body = await req.json().catch(() => null) as { returnTo?: string } | null;
+    const callback = body?.returnTo ? await createAppSessionExchange(req, env, body.returnTo) : null;
+    return callback ? json({ callback }) : json({ error: "invalid or expired app return" }, 400);
   }
   const organizationResponse = await handleOrganizationApi(req, env, principal, url);
   if (organizationResponse) return organizationResponse;
@@ -1546,7 +1587,7 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
   if (tail === "adopt" && req.method === "POST") return handleAdoptResources(req, env, principal, app);
   if (tail === "domains" && req.method === "POST") {
     if (!permissions.modifyRuntime) return json({ error: "editor access required" }, 403);
-    return handleAddDomain(req, env, principal, app);
+    return json({ error: "custom domains are not yet supported; the default hostname is allocated from the app slug" }, 400);
   }
   if (tail.startsWith("domains/") && req.method === "DELETE") {
     if (!permissions.modifyRuntime) return json({ error: "editor access required" }, 403);
@@ -1663,11 +1704,8 @@ async function serveAsset(req: Request, env: Env, key: string): Promise<Response
 }
 
 async function appForHostname(env: Env, hostname: string): Promise<AppRow | null> {
-  const suffix = ".apps.myslop.app";
-  if (hostname.endsWith(suffix) && hostname !== `apps.myslop.app`) {
-    const slug = hostname.slice(0, -suffix.length);
-    return validSlug(slug) ? getAppBySlug(env, slug) : null;
-  }
+  const slug = appSlugFromHostname(hostname);
+  if (slug) return getAppBySlug(env, slug);
   return env.CONTROL_DB.prepare(
     `SELECT a.* FROM app_domains d JOIN apps a ON a.id=d.app_id
      WHERE d.hostname=? AND d.status='active' AND a.archived_at IS NULL`,
@@ -1681,6 +1719,13 @@ export function appRequestHeaders(req: Request, app: AppRow, user: User | null, 
     if (lower.startsWith("x-myslop-") || (app.visibility !== "public" && (lower === "authorization" || lower === "cookie"))) {
       headers.delete(name);
     }
+  }
+  if (/^Bearer\s+msa_/i.test(headers.get("authorization") ?? "")) headers.delete("authorization");
+  if (app.visibility === "public") {
+    const cookies = (headers.get("cookie") ?? "").split(/;\s*/)
+      .filter((cookie) => cookie && !cookie.startsWith(`${SESSION_COOKIE}=`) && !cookie.startsWith(`${LEGACY_SESSION_COOKIE}=`));
+    if (cookies.length) headers.set("cookie", cookies.join("; "));
+    else headers.delete("cookie");
   }
   if (app.visibility !== "public") {
     headers.set("x-myslop-app-id", app.id);
@@ -1698,13 +1743,27 @@ async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Respo
   if (url.pathname === "/__email" || url.pathname === "/__scheduled") return new Response("not found\n", { status: 404 });
   const app = await appForHostname(env, url.hostname);
   if (!app || !app.active_version) return new Response("app not found\n", { status: 404 });
+  if (url.pathname === "/__myslop/session" && req.method === "GET") {
+    const exchange = await consumeAppSessionExchange(env, url.searchParams.get("code") ?? "", url.hostname);
+    if (!exchange) return new Response("session exchange expired or invalid\n", { status: 400 });
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location: exchange.returnTo,
+        "set-cookie": sessionCookie(exchange.sessionId, SESSION_TTL_MS / 1000),
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
+      },
+    });
+  }
+  if (url.pathname.startsWith("/__myslop/")) return new Response("not found\n", { status: 404 });
   const user = app.visibility === "public" ? null : await getSessionUser(req, env);
   const role = await effectiveAppRole(env, app, user);
   if (!role) {
     const wantsJson = req.headers.get("accept")?.includes("application/json") || req.headers.has("authorization");
     if (wantsJson) return json({ error: "unauthorized" }, 401);
     const returnTo = encodeURIComponent(url.toString());
-    return Response.redirect(`https://apps.myslop.app/?returnTo=${returnTo}`, 302);
+    return Response.redirect(`${PLATFORM_ORIGIN}/?returnTo=${returnTo}`, 302);
   }
   if (app.visibility !== "public" && user && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
     const origin = req.headers.get("origin");
@@ -1757,7 +1816,27 @@ function withSecurityHeaders(response: Response, preserveCookies = false): Respo
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
-    if (url.hostname !== "apps.myslop.app") return handleAppRequest(req, env, url);
+    const localPlatform = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    if (PASSTHROUGH_HOSTS.has(url.hostname)) return fetch(req);
+    if (url.hostname === PLATFORM_APEX_HOST || url.hostname === "www.myslop.app") {
+      return Response.redirect(platformRedirect(url).toString(), 308);
+    }
+    if (url.hostname === LEGACY_PLATFORM_HOST) {
+      if (url.pathname.startsWith("/api/") && (req.method === "GET" || req.method === "HEAD")) {
+        return handleApi(req, env, url, ctx);
+      }
+      if (url.pathname.startsWith("/api/")) {
+        return json({ error: `platform API moved to ${PLATFORM_ORIGIN}`, code: "platform_origin_moved" }, 409);
+      }
+      return Response.redirect(platformRedirect(url).toString(), 308);
+    }
+    const legacySlug = legacyAppSlugFromHostname(url.hostname);
+    if (legacySlug) {
+      const target = new URL(url.pathname, appUrl(legacySlug));
+      target.search = url.search;
+      return Response.redirect(target.toString(), 308);
+    }
+    if (url.hostname !== PLATFORM_HOST && !localPlatform) return handleAppRequest(req, env, url);
     if (url.pathname.startsWith("/api/")) return handleApi(req, env, url, ctx);
     if (url.pathname === "/skill.md") {
       return new Response(skillMd, { headers: { "content-type": "text/markdown; charset=utf-8" } });

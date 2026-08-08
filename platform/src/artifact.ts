@@ -3,6 +3,8 @@ import { $ } from "bun";
 import { normalizeAppManifest, resolveManifest, type ResolvedAppManifest, type SourceManifest } from "./manifest";
 import { sha256Hex } from "./core";
 
+const RUNTIME_ABI_VERSION = 2;
+
 export interface AppAsset {
   path: string;
   contentType?: string;
@@ -102,7 +104,7 @@ export async function createAppArtifact(root: string, options: { suppressMigrati
     migrations: migrations.length > 0,
   });
   const deployment = { manifest, assets, ...(worker ? { worker } : {}), migrations };
-  const deploymentHash = await sha256Hex(JSON.stringify(stable(deployment)));
-  const sourceHash = await sha256Hex(JSON.stringify(stable({ app, deployment })));
+  const deploymentHash = await sha256Hex(JSON.stringify(stable({ runtimeAbi: RUNTIME_ABI_VERSION, deployment })));
+  const sourceHash = await sha256Hex(JSON.stringify(stable({ runtimeAbi: RUNTIME_ABI_VERSION, app, deployment })));
   return { app, deployment, sourceHash, deploymentHash };
 }

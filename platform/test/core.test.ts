@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { contentType, safeAssetPath, validAppReturnUrl, validBindingName, validSlug } from "../src/core";
+import { contentType, safeAssetPath, sessionCookie, validAppReturnUrl, validBindingName, validSlug } from "../src/core";
 import { decryptSecret, encryptSecret } from "../src/secrets";
 import type { Env } from "../src/types";
 
@@ -26,9 +26,16 @@ describe("artifact validation", () => {
   });
 
   test("accepts only exact app return origins", () => {
-    expect(validAppReturnUrl("https://commercial-dashboard.apps.myslop.app/report")).toBe(true);
-    expect(validAppReturnUrl("https://evil.example/?x=.apps.myslop.app")).toBe(false);
-    expect(validAppReturnUrl("https://apps.myslop.app")).toBe(false);
+    expect(validAppReturnUrl("https://commercial-dashboard.myslop.app/report")).toBe(true);
+    expect(validAppReturnUrl("https://evil.example/?x=.myslop.app")).toBe(false);
+    expect(validAppReturnUrl("https://myslop.app")).toBe(false);
+  });
+
+  test("keeps platform sessions host-only", () => {
+    const cookie = sessionCookie("session", 60);
+    expect(cookie).toStartWith("__Host-msa_sid=");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).not.toContain("Domain=");
   });
 
   test("encrypts secrets at rest", async () => {

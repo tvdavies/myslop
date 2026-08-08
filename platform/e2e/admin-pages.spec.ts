@@ -21,7 +21,7 @@ const tokens = [
 const app = {
   id: "app-1", slug: "commercial-dashboard", name: "Commercial Dashboard", description: "Pipeline",
   visibility: "private" as const, audience: "restricted" as const, teamId: team.id, folderId: folders[0]!.id,
-  url: "https://commercial-dashboard.apps.myslop.app", activeVersion: 4, hasDatabase: true, hasFiles: false,
+  url: "https://commercial-dashboard.myslop.app", activeVersion: 4, hasDatabase: true, hasFiles: false,
   databaseDeleteAfter: null, filesDeleteAfter: null, databaseAdopted: false, filesAdopted: false,
   managedBy: "manual" as const, sourceHash: null, deploymentHash: null,
   createdAt: 1, updatedAt: Date.UTC(2026, 7, 7), role: "owner" as const,

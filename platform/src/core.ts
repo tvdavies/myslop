@@ -1,14 +1,15 @@
+import { APP_HOST_SUFFIX, validAppSlug, validSlug } from "./domains";
+
 const enc = new TextEncoder();
 
 export const TOKEN_PREFIX = "msa_";
-export const SESSION_COOKIE = "msa_sid";
+export const SESSION_COOKIE = "__Host-msa_sid";
+export const LEGACY_SESSION_COOKIE = "msa_sid";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 export const RESERVED_BINDINGS = new Set(["DB", "FILES", "MYSLOP_APP_ID", "MYSLOP_APP_ORIGIN", "MYSLOP_INTERNAL_SECRET"]);
 
-export function validSlug(value: unknown): value is string {
-  return typeof value === "string" && /^[a-z][a-z0-9-]{1,46}[a-z0-9]$/.test(value);
-}
+export { validAppSlug, validSlug } from "./domains";
 
 export function validBindingName(value: unknown): value is string {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(value) && !RESERVED_BINDINGS.has(value);
@@ -18,9 +19,8 @@ export function validAppReturnUrl(value: string): boolean {
   try {
     const url = new URL(value);
     if (url.protocol !== "https:" || url.port || url.username || url.password) return false;
-    const suffix = ".apps.myslop.app";
-    if (!url.hostname.endsWith(suffix)) return false;
-    return validSlug(url.hostname.slice(0, -suffix.length));
+    if (!url.hostname.endsWith(APP_HOST_SUFFIX)) return false;
+    return validAppSlug(url.hostname.slice(0, -APP_HOST_SUFFIX.length));
   } catch {
     return false;
   }
@@ -78,7 +78,7 @@ export function readCookie(req: Request, name: string): string | null {
 }
 
 export function sessionCookie(id: string, maxAgeSeconds: number): string {
-  return `${SESSION_COOKIE}=${id}; Domain=.apps.myslop.app; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
+  return `${SESSION_COOKIE}=${id}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
 }
 
 export function contentType(path: string): string {

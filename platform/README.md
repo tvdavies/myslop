@@ -4,7 +4,7 @@ A private, agent-native microcloud where applications are shared like documents.
 
 Each app gets:
 
-- A predictable `<slug>.apps.myslop.app` URL
+- An automatically allocated `<slug>.myslop.app` URL
 - Static asset hosting when `public/` exists
 - An isolated Cloudflare Worker when `worker.ts` exists
 - An isolated D1 database when migrations exist or it is explicitly requested
@@ -17,9 +17,9 @@ Each app gets:
 
 ## Architecture
 
-`apps.myslop.app` is both the control plane and the dynamic dispatch Worker. The root hostname serves the app library and deployment API. Creating an app attaches its exact `<slug>.apps.myslop.app` hostname to the control Worker as a Cloudflare Custom Domain, which provisions DNS and TLS automatically. App requests resolve the app, enforce its access policy, serve immutable assets from the platform R2 bucket, and dispatch backend requests to the app's isolated Worker.
+`myslop.cloud` is the canonical control plane. `myslop.app` redirects to it, while a proxied wildcard route sends every first-level `<slug>.myslop.app` hostname to the dispatcher. Cloudflare Universal SSL covers this first-level wildcard, so app creation allocates a globally unique slug without provisioning per-app DNS or certificates. App requests resolve the slug, enforce its access policy, serve immutable assets from platform R2, and dispatch backend requests to the app's isolated Worker.
 
-App creation provisions only its control-plane record, access policy, DNS, and TLS. Deployments resolve a capability manifest from source conventions plus optional declarations, then lazily provision and bind only what that version needs. Cloudflare credentials never reach app code or deployment agents.
+Private and team apps use a short-lived, one-time session exchange from `myslop.cloud` to a host-only cookie on the app hostname. Platform session identifiers are never exposed to user Workers. Deployments resolve a capability manifest from source conventions plus optional declarations, then lazily provision and bind only what that version needs. Cloudflare credentials never reach app code or deployment agents.
 
 ## Application layout
 
@@ -37,7 +37,7 @@ Most apps need no manifest. Static assets, runtimes, and databases with migratio
 
 ```json
 {
-  "$schema": "https://apps.myslop.app/schema/v1.json",
+  "$schema": "https://myslop.cloud/schema/v1.json",
   "version": 1,
   "app": {
     "name": "Commercial Dashboard",
@@ -85,7 +85,7 @@ bun test
 bun run typecheck
 ```
 
-Local API development requires a local D1 database and fake session rows. App creation also calls the Cloudflare provisioning API, so it requires development values for `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
+Local API development requires a local D1 database and fake session rows. App creation is control-plane-only because wildcard routing allocates the default hostname from the unique app slug.
 
 ## Deploying the platform
 
@@ -127,19 +127,19 @@ Deploy only through the project script:
 bun run deploy
 ```
 
-It deploys the outbound egress-policy Worker first, serializes domain changes, and generates a unique temporary Wrangler configuration containing every active app domain. Do not run `wrangler deploy` directly: Wrangler would reconcile away dynamically attached app domains.
+It deploys the outbound egress-policy Worker first and generates a unique temporary Wrangler configuration that preserves legacy and explicitly attached domains during the migration window. Do not run `wrangler deploy` directly while those compatibility domains remain.
 
-`apps.myslop.app` is the control-plane custom domain. Do not create a wildcard CNAME: Cloudflare Universal SSL does not cover second-level wildcard names such as `*.apps.myslop.app`. The control plane attaches each app hostname as an exact Worker Custom Domain, giving it managed DNS and an exact TLS certificate. Verify a newly created app hostname before launch.
+`myslop.cloud` is the control-plane Custom Domain. The `*.myslop.app/*` Worker route sits behind one proxied wildcard DNS record; Universal SSL covers these first-level app hosts. `myslop.app` and the legacy `apps.myslop.app` hostname redirect to the canonical platform. App slugs are first-come and globally unique. Platform labels and existing exact service hosts (`apps`, `events`, `hello`, `os`, `state`, `storage`, `todo`, and `www`) are reserved. The wildcard Worker passes those service requests through to their exact Custom Domain Workers.
 
 ## Agent workflow
 
 Install the standalone CLI and obtain a token:
 
 ```sh
-curl -fsS https://apps.myslop.app/setup.sh | bash
+curl -fsS https://myslop.cloud/setup.sh | bash
 ```
 
-The script opens `https://apps.myslop.app/setup` for Shoo authentication, verifies and stores the one-time token at `~/.config/myslop-apps/token`, and installs the CLI into `~/.local/bin`. Then:
+The script opens `https://myslop.cloud/setup` for Shoo authentication, verifies and stores the one-time token at `~/.config/myslop-apps/token`, and installs the CLI into `~/.local/bin`. Then:
 
 ```sh
 myslop-apps create hello "Hello"
@@ -151,7 +151,7 @@ myslop-apps prune hello --confirm hello
 myslop-apps destroy hello --confirm hello
 ```
 
-The raw installable skill is served at `https://apps.myslop.app/skill.md`. It is also included with the Files and Mail skills in the public [Myslop Skills registry](https://github.com/tvdavies/myslop-skills):
+The raw installable skill is served at `https://myslop.cloud/skill.md`. It is also included with the Files and Mail skills in the public [Myslop Skills registry](https://github.com/tvdavies/myslop-skills):
 
 ```sh
 # Claude Code
@@ -185,7 +185,7 @@ Apps have a Public, Team, or Restricted audience and one effective role per pers
 - Agent tokens carry the issuing user's effective permissions. App-scoped tokens are restricted to one app and cannot reach team management endpoints.
 - Destructive actions and CLI commands require the exact app slug.
 
-`destroy` removes all immutable Worker versions and static assets, the app D1 database, every object in its R2 bucket and the bucket itself, encrypted secret records, app-scoped tokens, custom DNS/TLS domain, deployments, and operational control records. A minimal immutable audit tombstone is retained for security and accountability.
+`destroy` removes all immutable Worker versions and static assets, the app D1 database, every object in its R2 bucket and the bucket itself, encrypted secret records, app-scoped tokens, optional attached domain records, deployments, and operational control records. A minimal immutable audit tombstone is retained for security and accountability.
 
 ## Current MVP boundaries
 

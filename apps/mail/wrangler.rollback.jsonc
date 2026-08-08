@@ -42,5 +42,16 @@
         "InboxHub"
       ]
     }
+  ],
+  "triggers": {
+    "crons": [
+      "17 3 * * *"
+    ]
+  },
+  "routes": [
+    {
+      "pattern": "mail.myslop.app/*",
+      "zone_name": "myslop.app"
+    }
   ]
 }

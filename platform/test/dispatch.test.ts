@@ -40,11 +40,11 @@ const user: User = {
 };
 
 describe("app request trust models", () => {
-  test("public apps receive their own bearer and session cookie without platform identity", () => {
-    const headers = appRequestHeaders(new Request("https://demo.apps.myslop.app/api", {
+  test("public apps keep their own credentials but never receive the platform session", () => {
+    const headers = appRequestHeaders(new Request("https://demo.myslop.app/api", {
       headers: {
         authorization: "Bearer msf_existing",
-        cookie: "sid=existing",
+        cookie: "sid=existing; __Host-msa_sid=platform-secret; msa_sid=legacy-secret",
         "x-myslop-user-id": "spoofed",
         "x-myslop-app-role": "owner",
         "x-myslop-internal-signature": "spoofed",
@@ -56,10 +56,15 @@ describe("app request trust models", () => {
     expect(headers.get("x-myslop-app-id")).toBeNull();
     expect(headers.get("x-myslop-app-role")).toBeNull();
     expect(headers.get("x-myslop-internal-signature")).toBeNull();
+
+    const platformBearer = appRequestHeaders(new Request("https://demo.myslop.app/api", {
+      headers: { authorization: "Bearer msa_platform-secret" },
+    }), app("public"), null);
+    expect(platformBearer.get("authorization")).toBeNull();
   });
 
   test("team apps strip client credentials and inject verified platform identity", () => {
-    const headers = appRequestHeaders(new Request("https://demo.apps.myslop.app/api", {
+    const headers = appRequestHeaders(new Request("https://demo.myslop.app/api", {
       headers: { authorization: "Bearer client", cookie: "sid=client", "x-myslop-user-id": "spoofed" },
     }), app("team"), user, "editor");
     expect(headers.get("authorization")).toBeNull();

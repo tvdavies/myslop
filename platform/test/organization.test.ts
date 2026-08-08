@@ -64,7 +64,7 @@ async function organizationRequest(
   method = "GET",
   body?: unknown,
 ): Promise<Response | null> {
-  const url = new URL(`https://apps.myslop.app${path}`);
+  const url = new URL(`https://myslop.cloud${path}`);
   return handleOrganizationApi(new Request(url, {
     method,
     ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),

@@ -9,7 +9,7 @@ const asset: DashboardAsset = {
 
 describe("dashboard asset responses", () => {
   test("serves GET requests with validation and security headers", async () => {
-    const response = serveDashboardAsset(new Request("https://apps.myslop.app/assets/dashboard.js"), asset);
+    const response = serveDashboardAsset(new Request("https://myslop.cloud/assets/dashboard.js"), asset);
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe(asset.body);
@@ -22,7 +22,7 @@ describe("dashboard asset responses", () => {
 
   test("serves HEAD requests without a body", async () => {
     const response = serveDashboardAsset(
-      new Request("https://apps.myslop.app/assets/dashboard.js", { method: "HEAD" }),
+      new Request("https://myslop.cloud/assets/dashboard.js", { method: "HEAD" }),
       asset,
     );
 
@@ -35,7 +35,7 @@ describe("dashboard asset responses", () => {
   test("returns 304 for matching strong or weak validators", () => {
     for (const validator of [asset.etag, `"other", W/${asset.etag}`, "*"]) {
       const response = serveDashboardAsset(
-        new Request("https://apps.myslop.app/assets/dashboard.js", {
+        new Request("https://myslop.cloud/assets/dashboard.js", {
           headers: { "if-none-match": validator },
         }),
         asset,
@@ -50,7 +50,7 @@ describe("dashboard asset responses", () => {
 
   test("rejects unsupported methods", async () => {
     const response = serveDashboardAsset(
-      new Request("https://apps.myslop.app/assets/dashboard.js", { method: "POST" }),
+      new Request("https://myslop.cloud/assets/dashboard.js", { method: "POST" }),
       asset,
     );
 

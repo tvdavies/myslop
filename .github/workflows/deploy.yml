@@ -119,6 +119,23 @@ jobs:
         with:
           bun-version: 1.3.13
       - run: bun install --frozen-lockfile
+      - name: Record current platform version
+        id: platform-before
+        if: needs.changes.outputs.platform == 'true'
+        working-directory: platform
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          version="$(bunx wrangler deployments status --json | jq -r '.versions[] | select(.percentage == 100) | .version_id' | head -1)"
+          test -n "$version"
+          routes="$(curl --fail --silent --show-error -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/zones/8b4874725e68c294532a60e11e93e32e/workers/routes")"
+          route_present="$(jq -r 'any(.result[]; .pattern == "*.myslop.app/*")' <<<"$routes")"
+          domains="$(curl --fail --silent --show-error -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains/records")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "wildcard_route_present=$route_present" >> "$GITHUB_OUTPUT"
+          echo "cloud_domain_present=$(jq -r 'any(.result[]; .hostname == "myslop.cloud")' <<<"$domains")" >> "$GITHUB_OUTPUT"
+          echo "apex_domain_present=$(jq -r 'any(.result[]; .hostname == "myslop.app")' <<<"$domains")" >> "$GITHUB_OUTPUT"
       - name: Deploy platform
         if: needs.changes.outputs.platform == 'true'
         working-directory: platform
@@ -130,7 +147,7 @@ jobs:
         if: needs.changes.outputs.platform == 'true'
         run: |
           for attempt in $(seq 1 30); do
-            curl --fail --silent --show-error https://apps.myslop.app/schema/v1.json >/dev/null && exit 0
+            curl --fail --silent --show-error https://myslop.cloud/schema/v1.json >/dev/null && exit 0
             sleep 10
           done
           exit 1
@@ -147,6 +164,33 @@ jobs:
           }
           check https://files.myslop.app/skill.md
           check https://mail.myslop.app/skill.md
+          check https://commercial-dashboard.myslop.app/
+          for service in events hello os state storage todo; do
+            check "https://$service.myslop.app/"
+          done
+      - name: Roll back failed platform routing
+        if: failure() && needs.changes.outputs.platform == 'true' && steps.platform-before.outputs.version != ''
+        working-directory: platform
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS_VERSION: ${{ steps.platform-before.outputs.version }}
+        run: |
+          routes="$(curl --fail --silent --show-error -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/zones/8b4874725e68c294532a60e11e93e32e/workers/routes")"
+          route_id="$(jq -r '.result[] | select(.pattern == "*.myslop.app/*") | .id' <<<"$routes" | head -1)"
+          if [ "${{ steps.platform-before.outputs.wildcard_route_present }}" != "true" ] && [ -n "$route_id" ]; then
+            curl --fail --silent --show-error -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/zones/8b4874725e68c294532a60e11e93e32e/workers/routes/$route_id" >/dev/null
+          fi
+          domains="$(curl --fail --silent --show-error -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains/records")"
+          for entry in "myslop.cloud:${{ steps.platform-before.outputs.cloud_domain_present }}" "myslop.app:${{ steps.platform-before.outputs.apex_domain_present }}"; do
+            hostname="${entry%%:*}"
+            existed="${entry#*:}"
+            domain_id="$(jq -r --arg hostname "$hostname" '.result[] | select(.hostname == $hostname) | .id' <<<"$domains" | head -1)"
+            if [ "$existed" != "true" ] && [ -n "$domain_id" ]; then
+              curl --fail --silent --show-error -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains/records/$domain_id" >/dev/null
+            fi
+          done
+          bunx wrangler rollback "$PREVIOUS_VERSION" --yes --message "Automatic rollback after domain health failure"
       - name: Reconcile apps
         if: needs.changes.outputs.apps == 'true'
         env:
@@ -165,10 +209,26 @@ jobs:
             export MYSLOP_APP_FILTER="$SELECTED_APP"
           fi
           bun run sync-apps
+      - name: Finalize reviewed first-party routing
+        if: >-
+          needs.changes.outputs.apps == 'true' &&
+          github.event_name == 'workflow_dispatch' && inputs.apply_domains
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SELECTED_APP: ${{ inputs.app }}
+        run: |
+          if [ "$SELECTED_APP" = "all" ] || [ "$SELECTED_APP" = "files" ]; then
+            bunx wrangler triggers deploy --config apps/files/wrangler.jsonc
+          fi
+          if [ "$SELECTED_APP" = "all" ] || [ "$SELECTED_APP" = "mail" ]; then
+            bunx wrangler triggers deploy --config apps/mail/wrangler.jsonc
+            printf '%s\n' '{"name":"catch-all to Myslop platform","matchers":[{"type":"all"}],"actions":[{"type":"worker","value":["myslop-apps"]}],"enabled":true}' > /tmp/mail-routing-platform.json
+            curl --fail --silent --show-error -X PUT -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" --data-binary @/tmp/mail-routing-platform.json "https://api.cloudflare.com/client/v4/zones/8b4874725e68c294532a60e11e93e32e/email/routing/rules/catch_all" >/dev/null
+          fi
       - name: Verify first-party app health
         if: needs.changes.outputs.apps == 'true'
         env:
-          APPLY_DOMAINS: ${{ github.event_name == 'workflow_dispatch' && inputs.apply_domains || 'false' }}
           SELECTED_APP: ${{ github.event_name == 'workflow_dispatch' && inputs.app || 'all' }}
         run: |
           check() {
@@ -186,11 +246,28 @@ jobs:
             if [ ! -d "apps/$app" ]; then
               continue
             fi
-            check "https://$app.apps.myslop.app/skill.md"
-            if [ "$APPLY_DOMAINS" = "true" ]; then
-              check "https://$app.myslop.app/skill.md"
-            fi
+            check "https://$app.myslop.app/skill.md"
           done
+      - name: Restore standalone routes after a failed alias cutover
+        if: >-
+          failure() && needs.changes.outputs.apps == 'true' &&
+          github.event_name == 'workflow_dispatch' && inputs.apply_domains
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SELECTED_APP: ${{ inputs.app }}
+        run: |
+          domains="$(curl --fail --silent --show-error -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains/records")"
+          files_attached="$(jq -r 'any(.result[]; .hostname == "files.myslop.app")' <<<"$domains")"
+          mail_attached="$(jq -r 'any(.result[]; .hostname == "mail.myslop.app")' <<<"$domains")"
+          if { [ "$SELECTED_APP" = "all" ] || [ "$SELECTED_APP" = "files" ]; } && [ "$files_attached" != "true" ]; then
+            bunx wrangler deploy --config apps/files/wrangler.rollback.jsonc
+          fi
+          if { [ "$SELECTED_APP" = "all" ] || [ "$SELECTED_APP" = "mail" ]; } && [ "$mail_attached" != "true" ]; then
+            bunx wrangler deploy --config apps/mail/wrangler.rollback.jsonc
+            printf '%s\n' '{"name":"catch-all to myslop-mail worker","matchers":[{"type":"all"}],"actions":[{"type":"worker","value":["myslop-mail"]}],"enabled":true}' > /tmp/mail-routing-rollback.json
+            curl --fail --silent --show-error -X PUT -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" --data-binary @/tmp/mail-routing-rollback.json "https://api.cloudflare.com/client/v4/zones/8b4874725e68c294532a60e11e93e32e/email/routing/rules/catch_all" >/dev/null
+          fi
       - name: Record release
         env:
           PLATFORM_CHANGED: ${{ needs.changes.outputs.platform }}

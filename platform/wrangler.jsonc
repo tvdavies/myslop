@@ -5,11 +5,36 @@
   "compatibility_date": "2026-07-01",
   "workers_dev": false,
   "routes": [
-    { "pattern": "apps.myslop.app", "custom_domain": true }
+    {
+      "pattern": "myslop.cloud",
+      "custom_domain": true
+    },
+    {
+      "pattern": "myslop.app",
+      "custom_domain": true
+    },
+    {
+      "pattern": "apps.myslop.app",
+      "custom_domain": true
+    },
+    {
+      "pattern": "*.apps.myslop.app/*",
+      "zone_name": "myslop.app"
+    },
+    {
+      "pattern": "*.myslop.app/*",
+      "zone_name": "myslop.app"
+    }
   ],
   "r2_buckets": [
-    { "binding": "ASSETS", "bucket_name": "myslop-app-assets" },
-    { "binding": "MAIL_SPOOL", "bucket_name": "myslop-mail-spool" }
+    {
+      "binding": "ASSETS",
+      "bucket_name": "myslop-app-assets"
+    },
+    {
+      "binding": "MAIL_SPOOL",
+      "bucket_name": "myslop-mail-spool"
+    }
   ],
   "d1_databases": [
     {
@@ -19,7 +44,9 @@
     }
   ],
   "triggers": {
-    "crons": ["* * * * *"]
+    "crons": [
+      "* * * * *"
+    ]
   },
   "dispatch_namespaces": [
     {
@@ -27,11 +54,20 @@
       "namespace": "myslop-apps-production",
       "outbound": {
         "service": "myslop-apps-outbound",
-        "parameters": ["policy"]
+        "parameters": [
+          "policy"
+        ]
       }
     }
   ],
   "rules": [
-    { "type": "Text", "globs": ["**/*.html", "**/*.md"], "fallthrough": false }
+    {
+      "type": "Text",
+      "globs": [
+        "**/*.html",
+        "**/*.md"
+      ],
+      "fallthrough": false
+    }
   ]
 }

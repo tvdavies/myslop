@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Myslop Apps client setup:
-#   curl -fsS https://apps.myslop.app/setup.sh | bash
+#   curl -fsS https://myslop.cloud/setup.sh | bash
 set -euo pipefail
 
-BASE="https://apps.myslop.app"
+BASE="https://myslop.cloud"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/myslop-apps"
 TOKEN_FILE="$CONFIG_DIR/token"
 BIN_DIR="$HOME/.local/bin"

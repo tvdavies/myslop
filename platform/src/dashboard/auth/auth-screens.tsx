@@ -1,4 +1,4 @@
-import { Check, Clipboard, LoaderCircle, LogIn } from "lucide-react";
+import { ArrowUpRight, Check, Clipboard, LoaderCircle, LogIn } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
@@ -55,6 +55,37 @@ export function SignInScreen() {
           Sign in with Lleverage Google
         </Button>
         <p className="text-xs text-muted-foreground">Authentication is handled by Shoo and returns you to the page you requested.</p>
+      </section>
+    </main>
+  );
+}
+
+export function AppReturnScreen() {
+  const auth = useAuth();
+  const [busy, setBusy] = React.useState(false);
+  if (auth.status !== "authenticated" || !auth.appReturn) return null;
+  const target = new URL(auth.appReturn);
+  return (
+    <main className="auth-stage">
+      <section className="auth-panel" aria-labelledby="app-return-title">
+        <Brand />
+        <div className="auth-rule" aria-hidden="true" />
+        <p className="eyebrow">Open team application</p>
+        <h1 id="app-return-title">Continue to {target.hostname}?</h1>
+        <p className="auth-copy">Myslop will share your verified platform identity with this application for the access you already have.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              void auth.continueToApp(auth.appReturn!).catch(() => setBusy(false));
+            }}
+          >
+            {busy ? <LoaderCircle className="animate-spin" /> : <ArrowUpRight />}
+            Continue
+          </Button>
+          <Button variant="outline" disabled={busy} onClick={auth.cancelAppReturn}>Cancel</Button>
+        </div>
       </section>
     </main>
   );

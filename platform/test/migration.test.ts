@@ -96,3 +96,54 @@ describe("control migration 009", () => {
     }
   });
 });
+
+describe("control migration 010", () => {
+  test("enforces verified identities, reserved slugs and managed hostname ownership", async () => {
+    const database = new Database(":memory:");
+    try {
+      database.exec(`
+        PRAGMA foreign_keys=ON;
+        CREATE TABLE users (id TEXT PRIMARY KEY,email TEXT,created_at INTEGER NOT NULL);
+        CREATE TABLE sessions (id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+        CREATE TABLE apps (id TEXT PRIMARY KEY,slug TEXT NOT NULL UNIQUE);
+        CREATE TABLE deployments (id TEXT PRIMARY KEY);
+        CREATE TABLE app_domains (hostname TEXT PRIMARY KEY,app_id TEXT NOT NULL REFERENCES apps(id));
+        INSERT INTO users VALUES ('owner','owner@example.com',1);
+        INSERT INTO sessions VALUES ('session','owner',1,999999);
+        INSERT INTO apps VALUES ('demo','demo');
+        INSERT INTO apps VALUES ('other','other');
+      `);
+      database.exec(await Bun.file(new URL("../control-migrations/010_domain_routing.sql", import.meta.url)).text());
+
+      expect(() => database.exec("INSERT INTO users VALUES ('duplicate','OWNER@example.com',2)"))
+        .toThrow("UNIQUE constraint failed");
+      expect(() => database.exec("INSERT INTO apps VALUES ('reserved','apps')"))
+        .toThrow("app slug is reserved");
+      expect(() => database.exec("INSERT INTO app_domains VALUES ('demo.myslop.app','other')"))
+        .toThrow("hostname is already allocated to an app");
+      database.exec("INSERT INTO app_session_exchanges VALUES ('code','session','demo.myslop.app','https://demo.myslop.app/',999999,1)");
+      expect(database.query("SELECT hostname FROM app_session_exchanges").get()).toEqual({ hostname: "demo.myslop.app" });
+      expect(database.query("PRAGMA table_info(deployments)").all().some((column: any) => column.name === "internal_secret_version")).toBe(true);
+    } finally {
+      database.close();
+    }
+  });
+
+  test("detects legacy case-variant emails before applying the unique index", () => {
+    const database = new Database(":memory:");
+    try {
+      database.exec(`
+        CREATE TABLE users (id TEXT PRIMARY KEY,email TEXT,created_at INTEGER NOT NULL);
+        INSERT INTO users VALUES ('first','owner@example.com',1);
+        INSERT INTO users VALUES ('second','OWNER@example.com',2);
+      `);
+      const duplicates = database.query(`
+        SELECT lower(email) email,COUNT(*) count FROM users
+        WHERE email IS NOT NULL GROUP BY email COLLATE NOCASE HAVING COUNT(*)>1 ORDER BY email
+      `).all();
+      expect(duplicates).toEqual([{ email: "owner@example.com", count: 2 }]);
+    } finally {
+      database.close();
+    }
+  });
+});

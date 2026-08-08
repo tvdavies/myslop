@@ -10,7 +10,9 @@ import {
   sha256Hex,
   TOKEN_PREFIX,
   TOKEN_TTL_MS,
+  validAppReturnUrl,
 } from "./core";
+import { PLATFORM_ORIGIN } from "./domains";
 import type { Env, User } from "./types";
 
 const SHOO_ISSUER = "https://shoo.dev";
@@ -43,11 +45,12 @@ interface ShooClaims {
   exp: number;
   pairwise_sub: string;
   email?: string;
+  email_verified?: boolean;
   name?: string;
   picture?: string;
 }
 
-async function verifyShooToken(token: string): Promise<ShooClaims | null> {
+async function verifyShooToken(token: string, expectedAudience: string): Promise<ShooClaims | null> {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   let header: { alg?: string; kid?: string };
@@ -72,9 +75,40 @@ async function verifyShooToken(token: string): Promise<ShooClaims | null> {
     decodeBase64url(parts[2]) as BufferSource,
     enc.encode(`${parts[0]}.${parts[1]}`) as BufferSource,
   );
-  if (!valid || claims.iss !== SHOO_ISSUER || claims.aud !== "origin:https://apps.myslop.app") return null;
-  if (!claims.pairwise_sub || claims.exp < Date.now() / 1000) return null;
+  if (!valid || claims.iss !== SHOO_ISSUER || claims.aud !== expectedAudience) return null;
+  if (typeof claims.pairwise_sub !== "string" || !claims.pairwise_sub || claims.exp < Date.now() / 1000) return null;
+  if (claims.email !== undefined && typeof claims.email !== "string") return null;
+  if (claims.email_verified !== undefined && typeof claims.email_verified !== "boolean") return null;
   return claims;
+}
+
+export async function resolveShooPlatformUserId(
+  env: Env,
+  claims: Pick<ShooClaims, "pairwise_sub" | "email" | "email_verified">,
+): Promise<string> {
+  if (!claims.email || claims.email_verified !== true) return claims.pairwise_sub;
+  const existing = await env.CONTROL_DB.prepare(
+    "SELECT id FROM users WHERE email=? COLLATE NOCASE LIMIT 1",
+  ).bind(claims.email).first<{ id: string }>();
+  return existing?.id ?? claims.pairwise_sub;
+}
+
+async function upsertShooPlatformUser(env: Env, claims: ShooClaims, now: number): Promise<string> {
+  let userId = await resolveShooPlatformUserId(env, claims);
+  try {
+    await env.CONTROL_DB.prepare(
+      `INSERT INTO users (id,email,name,picture,created_at) VALUES (?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET email=excluded.email,name=excluded.name,picture=excluded.picture`,
+    ).bind(userId, claims.email!, claims.name ?? null, claims.picture ?? null, now).run();
+  } catch (error) {
+    const concurrentUserId = await resolveShooPlatformUserId(env, claims);
+    if (concurrentUserId === claims.pairwise_sub) throw error;
+    userId = concurrentUserId;
+    await env.CONTROL_DB.prepare(
+      "UPDATE users SET name=COALESCE(?,name),picture=COALESCE(?,picture) WHERE id=?",
+    ).bind(claims.name ?? null, claims.picture ?? null, userId).run();
+  }
+  return userId;
 }
 
 export async function exchangeSession(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -84,17 +118,21 @@ export async function exchangeSession(req: Request, env: Env, ctx: ExecutionCont
   } catch {
     return json({ error: "invalid body" }, 400);
   }
-  const claims = await verifyShooToken(idToken);
+  const origin = new URL(req.url).origin;
+  if (origin !== PLATFORM_ORIGIN && origin !== "http://localhost:8787") {
+    return json({ error: "invalid platform origin" }, 400);
+  }
+  const claims = await verifyShooToken(idToken, `origin:${origin}`);
   if (!claims) return json({ error: "invalid identity token" }, 401);
   const domain = (env.ALLOWED_EMAIL_DOMAIN || "lleverage.ai").toLowerCase();
-  if (!claims.email || !claims.email.toLowerCase().endsWith(`@${domain}`)) {
-    return json({ error: `sign in with your @${domain} account` }, 403);
+  if (
+    !claims.email || claims.email_verified !== true ||
+    !claims.email.toLowerCase().endsWith(`@${domain}`)
+  ) {
+    return json({ error: `sign in with a verified @${domain} account` }, 403);
   }
   const now = Date.now();
-  await env.CONTROL_DB.prepare(
-    `INSERT INTO users (id, email, name, picture, created_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET email=excluded.email, name=excluded.name, picture=excluded.picture`,
-  ).bind(claims.pairwise_sub, claims.email ?? null, claims.name ?? null, claims.picture ?? null, now).run();
+  const userId = await upsertShooPlatformUser(env, claims, now);
   const team = await env.CONTROL_DB.prepare(
     "SELECT id FROM teams WHERE lower(allowed_email_domain)=? ORDER BY created_at LIMIT 1",
   ).bind(domain).first<{ id: string }>();
@@ -102,13 +140,57 @@ export async function exchangeSession(req: Request, env: Env, ctx: ExecutionCont
   await env.CONTROL_DB.prepare(
     `INSERT OR IGNORE INTO team_members (team_id,user_id,role,status,created_at,updated_at)
      SELECT ?,id,CASE WHEN platform_role='owner' THEN 'admin' ELSE 'member' END,'active',?,? FROM users WHERE id=?`,
-  ).bind(team.id, now, now, claims.pairwise_sub).run();
+  ).bind(team.id, now, now, userId).run();
   const id = randomHex(32);
   await env.CONTROL_DB.prepare(
-    "INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-  ).bind(id, claims.pairwise_sub, now, now + SESSION_TTL_MS).run();
+    "INSERT INTO sessions (id,user_id,created_at,expires_at) VALUES (?,?,?,?)",
+  ).bind(id, userId, now, now + SESSION_TTL_MS).run();
   ctx.waitUntil(env.CONTROL_DB.prepare("DELETE FROM sessions WHERE expires_at < ?").bind(now).run());
   return json({ ok: true }, 200, { "set-cookie": sessionCookie(id, SESSION_TTL_MS / 1000) });
+}
+
+export async function createAppSessionExchange(
+  req: Request,
+  env: Env,
+  returnTo: string,
+): Promise<string | null> {
+  if (!validAppReturnUrl(returnTo)) return null;
+  const sessionId = readCookie(req, SESSION_COOKIE);
+  if (!sessionId || !(await getSessionUser(req, env))) return null;
+  const target = new URL(returnTo);
+  const code = randomHex(32);
+  const codeHash = await sha256Hex(code);
+  const now = Date.now();
+  await env.CONTROL_DB.prepare(
+    `INSERT INTO app_session_exchanges (code_hash,session_id,hostname,return_to,expires_at,created_at)
+     VALUES (?,?,?,?,?,?)`,
+  ).bind(codeHash, sessionId, target.hostname, target.toString(), now + 60_000, now).run();
+  await env.CONTROL_DB.prepare("DELETE FROM app_session_exchanges WHERE expires_at<?").bind(now).run();
+  const callback = new URL("/__myslop/session", target.origin);
+  callback.searchParams.set("code", code);
+  return callback.toString();
+}
+
+export async function consumeAppSessionExchange(
+  env: Env,
+  code: string,
+  hostname: string,
+): Promise<{ sessionId: string; returnTo: string } | null> {
+  if (!/^[a-f0-9]{64}$/.test(code)) return null;
+  const codeHash = await sha256Hex(code);
+  const now = Date.now();
+  const exchange = await env.CONTROL_DB.prepare(
+    `DELETE FROM app_session_exchanges
+     WHERE code_hash=? AND hostname=? AND expires_at>?
+     RETURNING session_id,return_to`,
+  ).bind(codeHash, hostname, now).first<{ session_id: string; return_to: string }>();
+  if (!exchange || !validAppReturnUrl(exchange.return_to)) return null;
+  const target = new URL(exchange.return_to);
+  if (target.hostname !== hostname) return null;
+  const session = await env.CONTROL_DB.prepare(
+    "SELECT 1 ok FROM sessions WHERE id=? AND expires_at>?",
+  ).bind(exchange.session_id, now).first();
+  return session ? { sessionId: exchange.session_id, returnTo: target.toString() } : null;
 }
 
 export async function getSessionUser(req: Request, env: Env): Promise<User | null> {
@@ -174,6 +256,10 @@ export async function mintToken(
 
 export async function signOut(req: Request, env: Env): Promise<Response> {
   const id = readCookie(req, SESSION_COOKIE);
-  if (id) await env.CONTROL_DB.prepare("DELETE FROM sessions WHERE id=?").bind(id).run();
+  if (id) {
+    const session = await env.CONTROL_DB.prepare("SELECT user_id FROM sessions WHERE id=?")
+      .bind(id).first<{ user_id: string }>();
+    if (session) await env.CONTROL_DB.prepare("DELETE FROM sessions WHERE user_id=?").bind(session.user_id).run();
+  }
   return json({ ok: true }, 200, { "set-cookie": sessionCookie("", 0) });
 }

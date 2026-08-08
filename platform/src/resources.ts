@@ -99,7 +99,7 @@ export function buildResourceTopology(input: {
     kind: "domain",
     label: "Domain",
     status: domainError ? "error" : "active",
-    detail: `${input.app.slug}.apps.myslop.app`,
+    detail: `${input.app.slug}.myslop.app`,
     secondary: activeAliases.length ? plural(activeAliases.length, "active alias", "active aliases") : undefined,
   });
 

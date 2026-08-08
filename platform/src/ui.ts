@@ -1,3 +1,5 @@
+import { APP_HOST_SUFFIX, PLATFORM_ORIGIN, RESERVED_APP_SLUGS, validSlugSyntax } from "./domains";
+
 export type DashboardRoute =
   | { name: "apps"; scope: "all" | "root" }
   | { name: "apps"; scope: "folder"; folderId: string }
@@ -18,8 +20,6 @@ const STATIC_ROUTES = new Map<string, DashboardRoute>([
 ]);
 
 const DASHBOARD_PATH_PATTERNS = [/^\/folders\/[^/]+$/, /^\/apps\/[^/]+\/settings$/];
-const APP_HOST_SUFFIX = ".apps.myslop.app";
-const APP_SLUG = /^[a-z][a-z0-9-]{1,46}[a-z0-9]$/;
 
 export function isDashboardPath(pathname: string): boolean {
   return STATIC_ROUTES.has(pathname) || DASHBOARD_PATH_PATTERNS.some((pattern) => pattern.test(pathname));
@@ -49,7 +49,7 @@ export function parseDashboardRoute(pathname: string): DashboardRoute {
   return { name: "not-found" };
 }
 
-export function isSafeInternalDashboardRoute(value: string | null | undefined, origin = "https://apps.myslop.app"): boolean {
+export function isSafeInternalDashboardRoute(value: string | null | undefined, origin = PLATFORM_ORIGIN): boolean {
   if (!value || !value.startsWith("/") || value.startsWith("//")) return false;
   try {
     return isDashboardPath(new URL(value, origin).pathname);
@@ -68,5 +68,6 @@ export function safeExternalAppReturn(value: string | null | undefined): string 
   }
   if (url.protocol !== "https:" || url.port || url.username || url.password) return null;
   if (!url.hostname.endsWith(APP_HOST_SUFFIX)) return null;
-  return APP_SLUG.test(url.hostname.slice(0, -APP_HOST_SUFFIX.length)) ? url.href : null;
+  const slug = url.hostname.slice(0, -APP_HOST_SUFFIX.length);
+  return validSlugSyntax(slug) && !RESERVED_APP_SLUGS.has(slug) ? url.href : null;
 }

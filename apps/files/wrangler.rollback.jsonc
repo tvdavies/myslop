@@ -26,5 +26,11 @@
       ],
       "fallthrough": false
     }
+  ],
+  "routes": [
+    {
+      "pattern": "files.myslop.app/*",
+      "zone_name": "myslop.app"
+    }
   ]
 }

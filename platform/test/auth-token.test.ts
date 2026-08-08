@@ -57,7 +57,7 @@ describe("team-scoped bearer tokens", () => {
       CONTROL_DB: { prepare: (sql: string) => new SqliteStatement(database, sql) },
     } as unknown as Env;
 
-    const principal = await authenticate(new Request("https://apps.myslop.app/api/me", {
+    const principal = await authenticate(new Request("https://myslop.cloud/api/me", {
       headers: { authorization: `Bearer ${secret}` },
     }), env);
     expect(principal).toMatchObject({ tokenId: "token", teamId: "team_myslop" });
