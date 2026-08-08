@@ -109,6 +109,7 @@ interface ShooClaims {
   exp: number;
   pairwise_sub: string;
   email?: string;
+  email_verified?: boolean;
   name?: string;
   picture?: string;
 }
@@ -146,10 +147,59 @@ async function verifyShooIdToken(idToken: string, expectedAud: string): Promise<
   if (payload.aud !== expectedAud) return null;
   if (typeof payload.exp !== "number" || Date.now() / 1000 > payload.exp) return null;
   if (typeof payload.pairwise_sub !== "string" || !payload.pairwise_sub) return null;
+  if (payload.email !== undefined && typeof payload.email !== "string") return null;
+  if (payload.email_verified !== undefined && typeof payload.email_verified !== "boolean") return null;
   return payload;
 }
 
 // --- Sessions ---
+
+type ShooIdentity = Pick<ShooClaims, "pairwise_sub" | "email" | "email_verified" | "name" | "picture">;
+
+export async function resolveShooUserId(env: Env, claims: ShooIdentity): Promise<string> {
+  if (!claims.email || claims.email_verified !== true) return claims.pairwise_sub;
+  const existing = await env.DB.prepare(
+    "SELECT id FROM users WHERE email = ? COLLATE NOCASE LIMIT 1",
+  )
+    .bind(claims.email)
+    .first<{ id: string }>();
+  return existing?.id ?? claims.pairwise_sub;
+}
+
+export async function createShooSession(
+  env: Env,
+  claims: ShooIdentity,
+  now = Date.now(),
+  sid = randomId(32),
+): Promise<string> {
+  const verifiedEmail = claims.email_verified === true ? claims.email ?? null : null;
+  let userId = await resolveShooUserId(env, claims);
+  try {
+    await env.DB.prepare(
+      `INSERT INTO users (id, email, name, picture, created_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         email = COALESCE(excluded.email, email),
+         name = COALESCE(excluded.name, name),
+         picture = COALESCE(excluded.picture, picture)`,
+    )
+      .bind(userId, verifiedEmail, claims.name ?? null, claims.picture ?? null, now)
+      .run();
+  } catch (error) {
+    if (!verifiedEmail) throw error;
+    const concurrentUserId = await resolveShooUserId(env, claims);
+    if (concurrentUserId === claims.pairwise_sub) throw error;
+    userId = concurrentUserId;
+    await env.DB.prepare(
+      `UPDATE users SET name=COALESCE(?,name),picture=COALESCE(?,picture) WHERE id=?`,
+    ).bind(claims.name ?? null, claims.picture ?? null, userId).run();
+  }
+  await env.DB.prepare(
+    "INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+  )
+    .bind(sid, userId, now, now + SESSION_TTL_MS)
+    .run();
+  return sid;
+}
 
 interface User {
   id: string;
@@ -352,22 +402,7 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
     if (!claims) return json({ error: "invalid token" }, 401);
 
     const now = Date.now();
-    await env.DB.prepare(
-      `INSERT INTO users (id, email, name, picture, created_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         email = COALESCE(excluded.email, email),
-         name = COALESCE(excluded.name, name),
-         picture = COALESCE(excluded.picture, picture)`,
-    )
-      .bind(claims.pairwise_sub, claims.email ?? null, claims.name ?? null, claims.picture ?? null, now)
-      .run();
-
-    const sid = randomId(32);
-    await env.DB.prepare(
-      "INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-    )
-      .bind(sid, claims.pairwise_sub, now, now + SESSION_TTL_MS)
-      .run();
+    const sid = await createShooSession(env, claims, now);
     ctx.waitUntil(env.DB.prepare("DELETE FROM sessions WHERE expires_at < ?").bind(now).run());
 
     return json({ ok: true }, 200, { "set-cookie": sessionCookie(sid, SESSION_TTL_MS / 1000) });
