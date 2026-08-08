@@ -2,11 +2,20 @@ import { nextCronRun } from "./cron";
 import { randomHex, sha256Hex } from "./core";
 import { deriveAppInternalSecret, signInternalRequest } from "./internal";
 import { parseResolvedManifest } from "./manifest";
-import type { AppRow, DeploymentRow, Env } from "./types";
+import type { Env } from "./types";
 
 const MAX_EMAIL_ATTEMPTS = 12;
 const MAX_SCHEDULE_ATTEMPTS = 3;
 const encoder = new TextEncoder();
+
+export const RETRYABLE_EMAILS_SQL = `SELECT e.id,COALESCE(e.app_id,a.id) app_id,e.sender,e.recipient,e.spool_key,e.attempts,
+       a.slug,a.active_version,d.worker_name,d.manifest_json,d.internal_secret_version
+     FROM email_deliveries e
+     JOIN apps a ON (e.app_id IS NULL OR a.id=e.app_id) AND a.archived_at IS NULL AND a.active_version IS NOT NULL
+     JOIN deployments d ON d.app_id=a.id AND d.version=a.active_version AND d.status='active'
+       AND json_extract(d.manifest_json,'$.capabilities.email')=1
+     WHERE e.status IN ('pending','retrying') AND e.next_attempt_at<=?
+     ORDER BY e.next_attempt_at,e.id LIMIT 50`;
 
 interface ScheduledRow {
   id: string;
@@ -43,9 +52,9 @@ export async function internalDispatchSecret(
   return version === 2 ? deriveAppInternalSecret(masterSecret, appId) : masterSecret;
 }
 
-async function dispatchInternal(
+export async function dispatchInternal(
   env: Env,
-  app: Pick<AppRow, "id" | "slug" | "worker_name" | "active_version"> & { internal_secret_version: number },
+  app: Pick<ScheduledRow, "app_id" | "slug" | "worker_name" | "active_version" | "internal_secret_version">,
   manifestJson: string,
   path: string,
   body: ReadableStream | ArrayBuffer,
@@ -56,11 +65,11 @@ async function dispatchInternal(
   const manifest = parseResolvedManifest(JSON.parse(manifestJson));
   const worker = env.DISPATCHER.get(app.worker_name, {}, {
     limits: { cpuMs: 30_000, subRequests: 100 },
-    outbound: { policy: { appId: app.id, hosts: manifest.capabilities.network } },
+    outbound: { policy: { appId: app.app_id, hosts: manifest.capabilities.network } },
   });
   const internalSecret = await internalDispatchSecret(
     env.INTERNAL_DISPATCH_SECRET,
-    app.id,
+    app.app_id,
     app.internal_secret_version,
   );
   const signature = await signInternalRequest(
@@ -264,15 +273,7 @@ async function recoverUnindexedEmailSpool(env: Env, now: number): Promise<void> 
 
 export async function retryEmailDeliveries(env: Env, now = Date.now()): Promise<void> {
   await recoverUnindexedEmailSpool(env, now);
-  const rows = await env.CONTROL_DB.prepare(
-    `SELECT e.id,e.app_id,e.sender,e.recipient,e.spool_key,e.attempts,a.slug,a.active_version,d.worker_name,d.manifest_json,d.internal_secret_version
-     FROM email_deliveries e
-     JOIN apps a ON (e.app_id IS NULL OR a.id=e.app_id) AND a.archived_at IS NULL AND a.active_version IS NOT NULL
-     JOIN deployments d ON d.app_id=a.id AND d.version=a.active_version AND d.status='active'
-       AND json_extract(d.manifest_json,'$.capabilities.email')=1
-     WHERE e.status IN ('pending','retrying') AND e.next_attempt_at<=?
-     ORDER BY e.next_attempt_at,e.id LIMIT 50`,
-  ).bind(now).all<EmailRow>();
+  const rows = await env.CONTROL_DB.prepare(RETRYABLE_EMAILS_SQL).bind(now).all<EmailRow>();
   await Promise.all(rows.results.map((row) => deliverEmail(env, row, now).catch(async (error) => {
     const attempts = row.attempts + 1;
     await env.CONTROL_DB.prepare(
