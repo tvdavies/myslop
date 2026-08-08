@@ -111,6 +111,7 @@ export interface DeploymentRow {
   worker_name: string | null;
   worker_sha256: string | null;
   manifest_json: string;
+  internal_secret_version: number;
   status: "pending" | "active" | "failed";
   created_by: string;
   created_at: number;

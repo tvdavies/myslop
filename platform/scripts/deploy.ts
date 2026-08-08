@@ -52,6 +52,15 @@ await d1(`CREATE TABLE IF NOT EXISTS _myslop_control_migrations (
 const migrationPaths: string[] = [];
 for await (const path of new Bun.Glob("*.sql").scan({ cwd: `${root}/control-migrations`, onlyFiles: true })) migrationPaths.push(path);
 migrationPaths.sort();
+const duplicateVerifiedEmails = await d1<{ email: string; count: number }>(
+  `SELECT lower(email) email,COUNT(*) count FROM users
+   WHERE email IS NOT NULL GROUP BY email COLLATE NOCASE HAVING COUNT(*)>1 ORDER BY email`,
+);
+if (duplicateVerifiedEmails.length) {
+  throw new Error(
+    `verified email migration blocked by duplicate accounts: ${duplicateVerifiedEmails.map(({ email, count }) => `${email} (${count})`).join(", ")}`,
+  );
+}
 for (const name of migrationPaths) {
   const path = `${root}/control-migrations/${name}`;
   const sql = await Bun.file(path).text();
@@ -68,6 +77,20 @@ for (const name of migrationPaths) {
   await d1("INSERT INTO _myslop_control_migrations (name,hash,applied_at) VALUES (?,?,?)", [name, hash, Date.now()]);
 }
 
+const reservedCollisions = await d1<{ slug: string }>(
+  "SELECT a.slug FROM apps a JOIN reserved_app_slugs r ON r.slug=a.slug WHERE a.archived_at IS NULL ORDER BY a.slug",
+);
+if (reservedCollisions.length) {
+  throw new Error(`reserved app slug collision: ${reservedCollisions.map(({ slug }) => slug).join(", ")}`);
+}
+const aliasCollisions = await d1<{ hostname: string }>(
+  `SELECT d.hostname FROM app_domains d JOIN apps a ON d.hostname=a.slug || '.myslop.app'
+   WHERE d.app_id<>a.id AND a.archived_at IS NULL ORDER BY d.hostname`,
+);
+if (aliasCollisions.length) {
+  throw new Error(`app hostname is claimed by another app alias: ${aliasCollisions.map(({ hostname }) => hostname).join(", ")}`);
+}
+
 const holder = `deploy-${crypto.randomUUID()}`;
 const now = Date.now();
 await d1("DELETE FROM platform_locks WHERE name='domains' AND expires_at<?", [now]);
@@ -77,22 +100,24 @@ if (lock[0]?.holder !== holder) throw new Error("an app is being created or anot
 
 const generated = `${root}/.wrangler.deploy-${crypto.randomUUID()}.json`;
 try {
-  const apps = await d1<{ slug: string }>("SELECT slug FROM apps WHERE archived_at IS NULL ORDER BY slug");
+  const legacyApps = await d1<{ slug: string }>(
+    "SELECT slug FROM apps WHERE archived_at IS NULL AND custom_domain_id IS NOT NULL ORDER BY slug",
+  );
   const aliases = await d1<{ hostname: string }>(
     "SELECT hostname FROM app_domains WHERE status='active' ORDER BY hostname",
   );
   const config = {
     ...baseConfig,
     routes: [
-      { pattern: "apps.myslop.app", custom_domain: true },
-      ...apps.map(({ slug }) => ({ pattern: `${slug}.apps.myslop.app`, custom_domain: true })),
+      ...(baseConfig.routes as Record<string, unknown>[]),
+      ...legacyApps.map(({ slug }) => ({ pattern: `${slug}.apps.myslop.app`, custom_domain: true })),
       ...aliases.map(({ hostname }) => ({ pattern: hostname, custom_domain: true })),
     ],
   };
   await Bun.write(generated, JSON.stringify(config, null, 2));
   console.log("Deploying outbound egress policy…");
   await run(["bunx", "wrangler", "deploy", "--config", "wrangler.outbound.jsonc"]);
-  const domainCount = apps.length + aliases.length;
+  const domainCount = legacyApps.length + aliases.length;
   console.log(`Deploying control plane with ${domainCount} app domain${domainCount === 1 ? "" : "s"} preserved…`);
   await run(["bunx", "wrangler", "deploy", "--config", generated]);
 } finally {

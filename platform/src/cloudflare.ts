@@ -1,4 +1,5 @@
 import type { ResolvedManifest } from "./manifest";
+import { deriveAppInternalSecret } from "./internal";
 import type { AppRow, Env } from "./types";
 
 interface ApiEnvelope<T> {
@@ -57,18 +58,25 @@ export async function deleteR2Bucket(env: Env, name: string): Promise<void> {
   await cfDelete(env, `/r2/buckets/${encodeURIComponent(name)}`);
 }
 
-export async function attachCustomDomain(env: Env, hostname: string): Promise<{ id: string }> {
+export async function attachCustomDomain(
+  env: Env,
+  hostname: string,
+  options: { overrideExistingOrigin?: boolean } = {},
+): Promise<{ id: string }> {
   return cf(env, "/workers/domains", {
     method: "PUT",
     body: JSON.stringify({
       hostname,
       service: "myslop-apps",
-      zone_name: "myslop.app",
-      // Alias cutovers are explicit platform-owner operations. Cloudflare
-      // otherwise refuses to move a hostname from the standalone Worker.
-      override_existing_origin: true,
+      zone_name: hostname === "myslop.cloud" || hostname.endsWith(".myslop.cloud") ? "myslop.cloud" : "myslop.app",
+      override_existing_origin: options.overrideExistingOrigin === true,
     }),
   });
+}
+
+export async function customDomainOwner(env: Env, hostname: string): Promise<string | null> {
+  const domains = await cf<{ hostname: string; service: string }[]>(env, "/workers/domains");
+  return domains.find((domain) => domain.hostname === hostname)?.service ?? null;
 }
 
 export async function deleteCustomDomain(env: Env, id: string): Promise<void> {
@@ -115,13 +123,14 @@ interface WorkerUploadOptions {
   workerName: string;
   manifest: ResolvedManifest;
   secrets?: { name: string; value: string }[];
+  internalSecretVersion?: 1 | 2;
 }
 
 export async function uploadUserWorker(env: Env, options: WorkerUploadOptions): Promise<void> {
-  const { app, source, manifest, secrets = [] } = options;
+  const { app, source, manifest, secrets = [], internalSecretVersion = 2 } = options;
   const bindings: Record<string, unknown>[] = [
     { type: "plain_text", name: "MYSLOP_APP_ID", text: app.id },
-    { type: "plain_text", name: "MYSLOP_APP_ORIGIN", text: `https://${app.slug}.apps.myslop.app` },
+    { type: "plain_text", name: "MYSLOP_APP_ORIGIN", text: `https://${app.slug}.myslop.app` },
   ];
   if (manifest.capabilities.database) {
     if (!app.d1_id) throw new Error("database capability is not provisioned");
@@ -132,7 +141,13 @@ export async function uploadUserWorker(env: Env, options: WorkerUploadOptions): 
     bindings.push({ type: "r2_bucket", name: "FILES", bucket_name: app.r2_bucket });
   }
   if (manifest.capabilities.email || manifest.capabilities.schedules.length) {
-    bindings.push({ type: "secret_text", name: "MYSLOP_INTERNAL_SECRET", text: env.INTERNAL_DISPATCH_SECRET });
+    bindings.push({
+      type: "secret_text",
+      name: "MYSLOP_INTERNAL_SECRET",
+      text: internalSecretVersion === 2
+        ? await deriveAppInternalSecret(env.INTERNAL_DISPATCH_SECRET, app.id)
+        : env.INTERNAL_DISPATCH_SECRET,
+    });
   }
   for (const durableObject of manifest.capabilities.durableObjects) {
     bindings.push({

@@ -1,6 +1,6 @@
 import { nextCronRun } from "./cron";
 import { randomHex, sha256Hex } from "./core";
-import { signInternalRequest } from "./internal";
+import { deriveAppInternalSecret, signInternalRequest } from "./internal";
 import { parseResolvedManifest } from "./manifest";
 import type { AppRow, DeploymentRow, Env } from "./types";
 
@@ -18,6 +18,7 @@ interface ScheduledRow {
   active_version: number;
   worker_name: string;
   manifest_json: string;
+  internal_secret_version: number;
 }
 
 interface EmailRow {
@@ -31,11 +32,20 @@ interface EmailRow {
   active_version: number;
   worker_name: string;
   manifest_json: string;
+  internal_secret_version: number;
+}
+
+export async function internalDispatchSecret(
+  masterSecret: string,
+  appId: string,
+  version: number,
+): Promise<string> {
+  return version === 2 ? deriveAppInternalSecret(masterSecret, appId) : masterSecret;
 }
 
 async function dispatchInternal(
   env: Env,
-  app: Pick<AppRow, "id" | "slug" | "worker_name" | "active_version">,
+  app: Pick<AppRow, "id" | "slug" | "worker_name" | "active_version"> & { internal_secret_version: number },
   manifestJson: string,
   path: string,
   body: ReadableStream | ArrayBuffer,
@@ -48,8 +58,18 @@ async function dispatchInternal(
     limits: { cpuMs: 30_000, subRequests: 100 },
     outbound: { policy: { appId: app.id, hosts: manifest.capabilities.network } },
   });
-  const signature = await signInternalRequest(env.INTERNAL_DISPATCH_SECRET, "POST", path, bodyHash);
-  return worker.fetch(`https://${app.slug}.apps.myslop.app${path}`, {
+  const internalSecret = await internalDispatchSecret(
+    env.INTERNAL_DISPATCH_SECRET,
+    app.id,
+    app.internal_secret_version,
+  );
+  const signature = await signInternalRequest(
+    internalSecret,
+    "POST",
+    path,
+    bodyHash,
+  );
+  return worker.fetch(`https://${app.slug}.myslop.app${path}`, {
     method: "POST",
     headers: {
       ...headers,
@@ -130,7 +150,7 @@ async function executeSchedule(env: Env, row: ScheduledRow, now: number): Promis
 export async function dispatchDueSchedules(env: Env, now = Date.now()): Promise<void> {
   const minute = Math.floor(now / 60_000) * 60_000;
   const due = await env.CONTROL_DB.prepare(
-    `SELECT s.id,s.app_id,s.expression,s.next_run_at,a.slug,a.active_version,d.worker_name,d.manifest_json,
+    `SELECT s.id,s.app_id,s.expression,s.next_run_at,a.slug,a.active_version,d.worker_name,d.manifest_json,d.internal_secret_version,
             COALESCE((SELECT attempt FROM schedule_runs WHERE schedule_id=s.id AND scheduled_at=s.next_run_at),0) attempt
      FROM app_schedules s
      JOIN apps a ON a.id=s.app_id AND a.archived_at IS NULL AND a.active_version IS NOT NULL
@@ -183,7 +203,7 @@ async function deliverEmail(env: Env, row: EmailRow, now: number): Promise<"deli
 
 async function emailApp(env: Env): Promise<EmailRow | null> {
   return env.CONTROL_DB.prepare(
-    `SELECT a.id app_id,a.slug,a.active_version,d.worker_name,d.manifest_json
+    `SELECT a.id app_id,a.slug,a.active_version,d.worker_name,d.manifest_json,d.internal_secret_version
      FROM apps a JOIN deployments d ON d.app_id=a.id AND d.version=a.active_version AND d.status='active'
      WHERE a.archived_at IS NULL AND json_extract(d.manifest_json,'$.capabilities.email')=1
      LIMIT 1`,
@@ -245,7 +265,7 @@ async function recoverUnindexedEmailSpool(env: Env, now: number): Promise<void> 
 export async function retryEmailDeliveries(env: Env, now = Date.now()): Promise<void> {
   await recoverUnindexedEmailSpool(env, now);
   const rows = await env.CONTROL_DB.prepare(
-    `SELECT e.id,e.app_id,e.sender,e.recipient,e.spool_key,e.attempts,a.slug,a.active_version,d.worker_name,d.manifest_json
+    `SELECT e.id,e.app_id,e.sender,e.recipient,e.spool_key,e.attempts,a.slug,a.active_version,d.worker_name,d.manifest_json,d.internal_secret_version
      FROM email_deliveries e
      JOIN apps a ON (e.app_id IS NULL OR a.id=e.app_id) AND a.archived_at IS NULL AND a.active_version IS NOT NULL
      JOIN deployments d ON d.app_id=a.id AND d.version=a.active_version AND d.status='active'

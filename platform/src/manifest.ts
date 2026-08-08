@@ -5,7 +5,7 @@ const RESERVED_RUNTIME_BINDINGS = ["DB", "FILES", "MYSLOP_APP_ID", "MYSLOP_APP_O
 
 export const MANIFEST_SCHEMA = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://apps.myslop.app/schema/v1.json",
+  $id: "https://myslop.cloud/schema/v1.json",
   title: "Myslop app manifest",
   type: "object",
   additionalProperties: false,
@@ -310,8 +310,10 @@ export function normalizeAppManifest(source: SourceManifest): ResolvedAppManifes
   if (!Array.isArray(rawDomains) || rawDomains.length > 10 || !rawDomains.every((domain) => typeof domain === "string")) {
     throw new Error("app.domains must contain at most 10 hostnames");
   }
-  const domains = rawDomains.map(normalizeAppDomain);
-  if (new Set(domains).size !== domains.length) throw new Error("app.domains must not contain duplicates");
+  if (rawDomains.length) {
+    throw new Error("app.domains cannot claim managed myslop.app hostnames; the default hostname is allocated from the app slug");
+  }
+  const domains: string[] = [];
   const resources = app.resources ?? {};
   if (typeof resources !== "object" || Array.isArray(resources)) throw new Error("app.resources must be an object");
   const unknownResource = Object.keys(resources).find((key) => !["database", "bucket"].includes(key));

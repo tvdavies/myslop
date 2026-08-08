@@ -15,7 +15,7 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   webServer: {
-    command: "bun run dev -- --port 8799",
+    command: "bun run generate && bun scripts/e2e-server.ts --port 8799",
     url: "http://127.0.0.1:8799",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

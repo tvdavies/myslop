@@ -1,6 +1,6 @@
 # myslop-files
 
-Public file host at **https://files.myslop.app** — a Cloudflare Worker (Lleverage account) in front of the `myslop-files` R2 bucket, with a D1 database for users, API tokens, and file metadata.
+Public file host at **https://files.myslop.app** — the `files` app on the Myslop platform, backed by the adopted `myslop-files` R2 bucket and D1 database for users, API tokens, and file metadata.
 
 Sign in at **https://files.myslop.app/dashboard** (auth by [shoo.dev](https://shoo.dev)) to mint upload tokens, see your files, make them private, or delete them.
 
@@ -52,7 +52,7 @@ bunx wrangler d1 execute myslop-files --remote --file schema.sql
 
 `setup.sh` is embedded base64-encoded (via `scripts/gen-setup.ts`) because Cloudflare's API WAF 403s worker bundles containing raw shell-script text. After editing `src/setup.sh`, always deploy with `bun run deploy` (or run `bun run gen` first); `bunx wrangler deploy` alone ships the stale generated copy.
 
-Auth comes from `CLOUDFLARE_API_TOKEN` (set in `~/.config/fish/conf.d/cloudflare.fish`). The token needs: Workers Scripts Edit, Workers R2 Storage Edit, D1 Edit, and Zone → Workers Routes Edit on `myslop.app`.
+Production is reconciled through the platform with the team-scoped `MYSLOP_APPS_TOKEN`. The default standalone config has no web route. During the rollback window, `bunx wrangler deploy --config wrangler.rollback.jsonc` adds the more-specific `files.myslop.app/*` route back to the standalone Worker without removing the platform wildcard.
 
 ## Local dev
 

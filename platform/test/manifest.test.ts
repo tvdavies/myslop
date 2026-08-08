@@ -36,7 +36,7 @@ describe("capability manifest", () => {
 
   test("normalizes app metadata, schedules, email, and durable objects", () => {
     const manifest = resolveManifest({
-      app: { visibility: "public", domains: ["FILES.MYSLOP.APP"] },
+      app: { visibility: "public" },
       capabilities: {
         email: true,
         schedules: ["17 3 * * *"],
@@ -55,8 +55,8 @@ describe("capability manifest", () => {
   });
 
   test("rejects invalid app domains and schedules", () => {
-    expect(() => resolveManifest({ app: { domains: ["example.com"] } }, { assets: false, worker: false, migrations: false }))
-      .toThrow("myslop.app zone");
+    expect(() => resolveManifest({ app: { domains: ["files.myslop.app"] } }, { assets: false, worker: false, migrations: false }))
+      .toThrow("allocated from the app slug");
     expect(() => resolveManifest({ capabilities: { schedules: ["every minute"] } }, { assets: false, worker: true, migrations: false }))
       .toThrow("five-field");
   });

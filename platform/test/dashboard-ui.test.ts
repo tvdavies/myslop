@@ -75,12 +75,12 @@ describe("dashboard routes", () => {
   });
 
   test("validates external app return URLs", () => {
-    expect(safeExternalAppReturn("https://valid-app.apps.myslop.app/path?q=1")).toBe("https://valid-app.apps.myslop.app/path?q=1");
-    expect(safeExternalAppReturn("http://valid-app.apps.myslop.app/")).toBeNull();
-    expect(safeExternalAppReturn("https://apps.myslop.app/")).toBeNull();
-    expect(safeExternalAppReturn("https://valid-app.apps.myslop.app:444/")).toBeNull();
-    expect(safeExternalAppReturn("https://user@valid-app.apps.myslop.app/")).toBeNull();
-    expect(safeExternalAppReturn("https://invalid_.apps.myslop.app/")).toBeNull();
+    expect(safeExternalAppReturn("https://valid-app.myslop.app/path?q=1")).toBe("https://valid-app.myslop.app/path?q=1");
+    expect(safeExternalAppReturn("http://valid-app.myslop.app/")).toBeNull();
+    expect(safeExternalAppReturn("https://myslop.app/")).toBeNull();
+    expect(safeExternalAppReturn("https://valid-app.myslop.app:444/")).toBeNull();
+    expect(safeExternalAppReturn("https://user@valid-app.myslop.app/")).toBeNull();
+    expect(safeExternalAppReturn("https://invalid_.myslop.app/")).toBeNull();
   });
 });
 

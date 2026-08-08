@@ -16,11 +16,13 @@ type AuthState =
   | { status: "loading"; error: null; me: null; setupToken: null }
   | { status: "signin"; error: string | null; me: null; setupToken: null }
   | { status: "setup"; error: null; me: MeResponse; setupToken: SetupToken }
-  | { status: "authenticated"; error: null; me: MeResponse; setupToken: null };
+  | { status: "authenticated"; error: null; me: MeResponse; setupToken: null; appReturn: string | null };
 
 type AuthContextValue = AuthState & {
   signIn: () => Promise<void>;
   signOut: () => Promise<void>;
+  continueToApp: (returnTo: string) => Promise<void>;
+  cancelAppReturn: () => void;
 };
 
 const AuthContext = React.createContext<AuthContextValue | null>(null);
@@ -152,11 +154,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         const external = safeExternalAppReturn(new URLSearchParams(location.search).get("returnTo") || sessionStorage.getItem("returnTo"));
         sessionStorage.removeItem("returnTo");
-        if (external) {
-          location.assign(external);
-          return;
-        }
-        setState({ status: "authenticated", error: null, me, setupToken: null });
+        setState({ status: "authenticated", error: null, me, setupToken: null, appReturn: external });
       } catch (error) {
         if (controller.signal.aborted) return;
         if (error instanceof ApiError && error.unauthorized && location.pathname === "/setup" && !sessionStorage.getItem("setup_auth_tried")) {
@@ -179,7 +177,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const value = React.useMemo<AuthContextValue>(() => ({ ...state, signIn: beginSignIn, signOut }), [state, signOut]);
+  const continueToApp = React.useCallback(async (returnTo: string) => {
+    const result = await apiRequest<{ callback: string }>("/api/app-session-exchange", {
+      method: "POST",
+      body: { returnTo },
+    });
+    location.assign(result.callback);
+  }, []);
+
+  const cancelAppReturn = React.useCallback(() => {
+    setState((current) => current.status === "authenticated" ? { ...current, appReturn: null } : current);
+    history.replaceState({}, "", "/dashboard");
+  }, []);
+
+  const value = React.useMemo<AuthContextValue>(
+    () => ({ ...state, signIn: beginSignIn, signOut, continueToApp, cancelAppReturn }),
+    [state, signOut, continueToApp, cancelAppReturn],
+  );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

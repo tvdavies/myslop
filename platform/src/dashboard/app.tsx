@@ -1,7 +1,7 @@
 import * as React from "react";
 
 import { AuthProvider, useAuth } from "@/auth/auth-provider";
-import { LoadingScreen, NoTeamScreen, SetupScreen, SignInScreen } from "@/auth/auth-screens";
+import { AppReturnScreen, LoadingScreen, NoTeamScreen, SetupScreen, SignInScreen } from "@/auth/auth-screens";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { RouteLoading } from "@/components/feedback/route-state";
@@ -55,6 +55,7 @@ function AuthenticatedApp() {
     case "setup":
       return <SetupScreen />;
     case "authenticated":
+      if (auth.appReturn) return <AppReturnScreen />;
       return auth.me.teams.length > 0 ? <AppShell><DashboardRouter /></AppShell> : <NoTeamScreen />;
   }
 }

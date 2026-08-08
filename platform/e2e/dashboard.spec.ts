@@ -13,7 +13,7 @@ const resources = {
     { kind: "database", label: "Database", status: "active", detail: "Attached" },
     { kind: "storage", label: "Storage", status: "disabled", detail: "Not attached" },
     { kind: "schedules", label: "Schedules", status: "pending", detail: "One schedule" },
-    { kind: "domain", label: "Domain", status: "active", detail: "commercial-dashboard.apps.myslop.app" },
+    { kind: "domain", label: "Domain", status: "active", detail: "commercial-dashboard.myslop.app" },
     { kind: "email", label: "Email", status: "disabled", detail: "Not enabled" },
     { kind: "secrets", label: "Secrets", status: "active", detail: "2 configured" },
   ],
@@ -38,7 +38,7 @@ const app = {
   audience: "restricted" as const,
   teamId: team.id,
   folderId: folders[0]!.id,
-  url: "https://commercial-dashboard.apps.myslop.app",
+  url: "https://commercial-dashboard.myslop.app",
   activeVersion: 4,
   hasDatabase: true,
   hasFiles: false,
@@ -112,7 +112,7 @@ async function mockDashboard(page: Page, options: MockOptions = {}) {
           { version: 3, created_at: Date.UTC(2026, 7, 1), status: "active", has_worker: true, created_by_name: "Alex Morgan" },
         ],
         secrets: [{ name: "CRM_TOKEN", updated_at: Date.UTC(2026, 7, 6) }],
-        domains: [{ hostname: "commercial-dashboard.apps.myslop.app", status: "active", error: null, created_at: 1, updated_at: 1 }],
+        domains: [{ hostname: "commercial-dashboard.myslop.app", status: "active", error: null, created_at: 1, updated_at: 1 }],
         schedules: [{ id: "daily", expression: "0 7 * * 1-5", next_run_at: Date.UTC(2026, 7, 8, 7), last_run_at: null, last_status: "pending", last_error: null }],
         activity: [{ id: "audit-1", action: "app.deployed", detail: { version: 4 }, created_at: Date.UTC(2026, 7, 7), user_name: "Tom Davies", user_email: "tom@example.com" }],
         resources,
@@ -232,4 +232,13 @@ test("shows an actionable empty-team state without requesting team resources", a
   await expect(page.getByRole("heading", { level: 1, name: "No team is available yet." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
   expect(teamRequests).toBe(0);
+});
+
+test("requires confirmation before sharing identity with an app hostname", async ({ page }) => {
+  await mockDashboard(page);
+  await page.goto(`/?returnTo=${encodeURIComponent("https://commercial-dashboard.myslop.app/report")}`);
+
+  await expect(page.getByRole("heading", { level: 1, name: "Continue to commercial-dashboard.myslop.app?" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
 });

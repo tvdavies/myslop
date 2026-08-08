@@ -2,7 +2,7 @@
 import { resolve } from "node:path";
 import { createAppArtifact } from "../src/artifact";
 
-const API = process.env.MYSLOP_APPS_API || "https://apps.myslop.app";
+const API = process.env.MYSLOP_APPS_API || "https://myslop.cloud";
 const configHome = process.env.XDG_CONFIG_HOME || `${process.env.HOME}/.config`;
 const tokenFile = `${configHome}/myslop-apps/token`;
 const TOKEN = process.env.MYSLOP_APPS_TOKEN || await Bun.file(tokenFile).text().catch(() => "");

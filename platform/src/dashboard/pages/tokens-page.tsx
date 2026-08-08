@@ -200,7 +200,7 @@ export function TokensPage() {
             ) : (
               <EmptyState title="No active tokens" description="Generate one when an agent or machine needs to deploy and manage apps." />
             )}
-            <div className="setup-command">New machine? Run <code>curl -fsS https://apps.myslop.app/setup.sh | bash</code></div>
+            <div className="setup-command">New machine? Run <code>curl -fsS https://myslop.cloud/setup.sh | bash</code></div>
           </Panel>
         </>
       ) : null}

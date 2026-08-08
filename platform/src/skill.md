@@ -17,10 +17,10 @@ Resolve the API token in this order:
 If neither exists, the token is rejected with `401`, or the `myslop-apps` CLI is missing, ask the user to run this in an interactive terminal:
 
 ```sh
-curl -fsS https://apps.myslop.app/setup.sh | bash
+curl -fsS https://myslop.cloud/setup.sh | bash
 ```
 
-It opens https://apps.myslop.app/setup, signs the user in, creates a machine-named token, verifies and stores it, and installs the standalone `myslop-apps` CLI in `~/.local/bin`. Never print, commit, or put the token in app source.
+It opens https://myslop.cloud/setup, signs the user in, creates a machine-named token, verifies and stores it, and installs the standalone `myslop-apps` CLI in `~/.local/bin`. Never print, commit, or put the token in app source.
 
 ## Convention-first app layout
 
@@ -46,7 +46,7 @@ Git-managed apps may declare organization, access, and capabilities that source 
 
 ```json
 {
-  "$schema": "https://apps.myslop.app/schema/v1.json",
+  "$schema": "https://myslop.cloud/schema/v1.json",
   "version": 1,
   "app": {
     "name": "Commercial Dashboard",

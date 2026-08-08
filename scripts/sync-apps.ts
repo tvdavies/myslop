@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { basename, dirname, resolve } from "node:path";
 import { createAppArtifact, type AppArtifact } from "../platform/src/artifact";
-import { validSlug } from "../platform/src/core";
+import { validAppSlug } from "../platform/src/core";
 import type { SourceManifest } from "../platform/src/manifest";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -56,7 +56,7 @@ async function appDirectories(): Promise<{ slug: string; path: string }[]> {
   for await (const entry of new Bun.Glob("*/myslop.json").scan({ cwd: APPS_DIR, onlyFiles: true })) {
     const slug = basename(dirname(resolve(APPS_DIR, entry)));
     const path = resolve(APPS_DIR, slug);
-    if (!validSlug(slug)) throw new Error(`invalid app directory slug: ${slug}`);
+    if (!validAppSlug(slug)) throw new Error(`invalid app directory slug: ${slug}`);
     directories.push({ slug, path });
   }
   return directories.sort((left, right) => left.slug.localeCompare(right.slug));
@@ -218,7 +218,7 @@ export async function syncApps(options: {
 if (import.meta.main) {
   const dryRun = process.argv.includes("--dry-run");
   await syncApps({
-    apiOrigin: process.env.MYSLOP_APPS_API || "https://apps.myslop.app",
+    apiOrigin: process.env.MYSLOP_APPS_API || "https://myslop.cloud",
     token: process.env.MYSLOP_APPS_TOKEN || "",
     team: process.env.MYSLOP_TEAM || "",
     dryRun,

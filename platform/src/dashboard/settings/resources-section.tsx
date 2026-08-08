@@ -44,7 +44,7 @@ export function ResourcesSection({ detail }: { detail: AppDetailResponse }) {
               ))
             ) : (
               <div className="compact-row">
-                <span className="font-mono">{detail.app.slug}.apps.myslop.app</span>
+                <span className="font-mono">{detail.app.slug}.myslop.app</span>
                 <StatusBadge status="active" />
               </div>
             )}

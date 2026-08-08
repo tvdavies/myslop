@@ -1,10 +1,10 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { attachCustomDomain, uploadUserWorker } from "../src/cloudflare";
+import { attachCustomDomain, customDomainOwner, uploadUserWorker } from "../src/cloudflare";
 import type { ResolvedManifest } from "../src/manifest";
 import type { AppRow, Env } from "../src/types";
 
-describe("custom domain cutover", () => {
-  test("explicitly overrides the standalone Worker origin", async () => {
+describe("custom domain allocation", () => {
+  test("fails closed on an existing origin by default", async () => {
     let requestBody: Record<string, unknown> = {};
     const implementation = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       requestBody = JSON.parse(String(init?.body));
@@ -21,8 +21,49 @@ describe("custom domain cutover", () => {
         hostname: "files.myslop.app",
         service: "myslop-apps",
         zone_name: "myslop.app",
+        override_existing_origin: false,
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("requires an explicit override for reviewed cutovers and selects the cloud zone", async () => {
+    let requestBody: Record<string, unknown> = {};
+    const fetchMock = spyOn(globalThis, "fetch").mockImplementation((async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return Response.json({ success: true, result: { id: "cloud-domain" } });
+    }) as typeof fetch);
+    try {
+      await attachCustomDomain({
+        CLOUDFLARE_ACCOUNT_ID: "account",
+        CLOUDFLARE_API_TOKEN: "token",
+      } as Env, "myslop.cloud", { overrideExistingOrigin: true });
+      expect(requestBody).toMatchObject({
+        hostname: "myslop.cloud",
+        zone_name: "myslop.cloud",
         override_existing_origin: true,
       });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("detects exact Worker domain collisions before allocation", async () => {
+    const implementation = (async () => Response.json({
+      success: true,
+      result: [{ hostname: "events.myslop.app", service: "myslop-events" }],
+    })) as unknown as typeof fetch;
+    const fetchMock = spyOn(globalThis, "fetch").mockImplementation(implementation);
+    try {
+      expect(await customDomainOwner({
+        CLOUDFLARE_ACCOUNT_ID: "account",
+        CLOUDFLARE_API_TOKEN: "token",
+      } as Env, "events.myslop.app")).toBe("myslop-events");
+      expect(await customDomainOwner({
+        CLOUDFLARE_ACCOUNT_ID: "account",
+        CLOUDFLARE_API_TOKEN: "token",
+      } as Env, "available.myslop.app")).toBeNull();
     } finally {
       fetchMock.mockRestore();
     }

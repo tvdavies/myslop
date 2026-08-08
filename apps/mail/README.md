@@ -1,6 +1,6 @@
 # myslop-mail
 
-Disposable email at **https://mail.myslop.app** — a Cloudflare Worker in front of the `myslop-mail` R2 bucket (raw messages) and a D1 database (users, API tokens, inbox ownership). Any address `<name>@myslop.app` receives mail via a catch-all; the API lets you wait for and read it.
+Disposable email at **https://mail.myslop.app** — the `mail` app on the Myslop platform, backed by the adopted `myslop-mail` R2 bucket (raw messages) and D1 database (users, API tokens, inbox ownership). Any address `<name>@myslop.app` receives mail via a catch-all; the API lets you wait for and read it.
 
 Sign in at **https://mail.myslop.app/dashboard** ([shoo.dev](https://shoo.dev)) to mint API tokens, claim addresses, and read mail.
 
@@ -80,3 +80,7 @@ Note: `wrangler r2 object put --local` writes don't reliably show up in a runnin
 ## Retention
 
 Delivered mail is deleted after 7 days by a nightly cron (`scheduled`). Ownership rows are kept until released.
+
+## Platform rollback
+
+The default standalone config has no web route. During the rollback window, `bunx wrangler deploy --config wrangler.rollback.jsonc` restores the more-specific `mail.myslop.app/*` web route. Email delivery is switched independently by restoring the Cloudflare Email Routing catch-all target to `myslop-mail`; restore its `17 3 * * *` cron only while the standalone Worker owns maintenance.

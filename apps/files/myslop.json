@@ -1,23 +1,28 @@
 {
-  "$schema": "https://apps.myslop.app/schema/v1.json",
+  "$schema": "https://myslop.cloud/schema/v1.json",
   "version": 1,
   "app": {
     "name": "Files",
     "description": "Share files with stable public URLs and private owner access.",
     "visibility": "public",
-    "domains": ["files.myslop.app"],
     "resources": {
       "database": {
         "id": "9f1433ac-cac9-47ad-9397-56e33dd2fdf0",
         "name": "myslop-files"
       },
-      "bucket": { "name": "myslop-files" }
+      "bucket": {
+        "name": "myslop-files"
+      }
     }
   },
   "capabilities": {
     "database": true,
     "files": true,
-    "secrets": ["EVENTS_SECRET"],
-    "network": ["shoo.dev"]
+    "secrets": [
+      "EVENTS_SECRET"
+    ],
+    "network": [
+      "shoo.dev"
+    ]
   }
 }
