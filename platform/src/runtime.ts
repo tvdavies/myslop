@@ -196,7 +196,8 @@ export async function acceptEmail(message: ForwardableEmailMessage, env: Env): P
   const spoolKey = `pending/${id}.eml`;
   const now = Date.now();
   const messageId = message.headers.get("message-id") ?? "";
-  await env.MAIL_SPOOL.put(spoolKey, message.raw, {
+  const raw = await new Response(message.raw).arrayBuffer();
+  await env.MAIL_SPOOL.put(spoolKey, raw, {
     customMetadata: {
       sender: message.from,
       recipient: message.to,
