@@ -5,6 +5,12 @@ import skillMd from "./skill.md";
 import skillHtmlTemplate from "./skill.html";
 import setupShB64 from "./setup-sh.generated";
 import { internalNonceKey, verifyInternalRequest } from "../../../platform/src/internal";
+import {
+  identityFromRequest,
+  linkIdentityWithUser,
+  resolveIdentityUser,
+  type LocalIdentityUser,
+} from "../../../platform/src/app-identity";
 
 // Decoded once; stored base64 because raw shell text in the bundle trips the
 // Cloudflare API WAF on deploy.
@@ -17,12 +23,14 @@ interface Env {
   DB: D1Database;
   INBOX_HUB: DurableObjectNamespace;
   MYSLOP_INTERNAL_SECRET?: string;
+  MYSLOP_APP_ID?: string;
+  MYSLOP_IDENTITY_KEYS?: string;
+  MYSLOP_IDENTITY_SECRET?: string;
+  MYSLOP_IDENTITY_LINK_DEADLINE?: string;
 }
 
 const internalNonces = new Map<string, number>();
 
-const SHOO_ISSUER = "https://shoo.dev";
-const SHOO_JWKS_URL = "https://shoo.dev/.well-known/jwks.json";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const SESSION_COOKIE = "sid";
 const TOKEN_PREFIX = "msm_";
@@ -77,135 +85,10 @@ function randomId(bytes: number): string {
   return hex(crypto.getRandomValues(new Uint8Array(bytes)));
 }
 
-// --- Shoo id_token verification (ES256 via JWKS, no SDK) ---
-
-let jwksCache: { keys: Map<string, CryptoKey>; fetchedAt: number } | null = null;
-
-async function loadJwks(force = false): Promise<Map<string, CryptoKey>> {
-  const fresh = jwksCache && Date.now() - jwksCache.fetchedAt < 60 * 60 * 1000;
-  if (jwksCache && fresh && !force) return jwksCache.keys;
-  const res = await fetch(SHOO_JWKS_URL);
-  if (!res.ok) throw new Error(`jwks fetch failed: ${res.status}`);
-  const { keys } = (await res.json()) as { keys: JsonWebKey[] };
-  const map = new Map<string, CryptoKey>();
-  for (const jwk of keys) {
-    if ((jwk as { kty?: string }).kty !== "EC") continue;
-    const key = await crypto.subtle.importKey(
-      "jwk",
-      jwk,
-      { name: "ECDSA", namedCurve: "P-256" },
-      false,
-      ["verify"],
-    );
-    map.set((jwk as { kid?: string }).kid ?? "", key);
-  }
-  jwksCache = { keys: map, fetchedAt: Date.now() };
-  return map;
-}
-
-interface ShooClaims {
-  iss: string;
-  aud: string;
-  exp: number;
-  pairwise_sub: string;
-  email?: string;
-  email_verified?: boolean;
-  name?: string;
-  picture?: string;
-}
-
-async function verifyShooIdToken(idToken: string, expectedAud: string): Promise<ShooClaims | null> {
-  const parts = idToken.split(".");
-  if (parts.length !== 3) return null;
-  let header: { alg?: string; kid?: string };
-  let payload: ShooClaims;
-  try {
-    header = JSON.parse(dec.decode(unb64url(parts[0]!)));
-    payload = JSON.parse(dec.decode(unb64url(parts[1]!)));
-  } catch {
-    return null;
-  }
-  if (header.alg !== "ES256") return null;
-
-  let keys = await loadJwks();
-  let key = keys.get(header.kid ?? "");
-  if (!key) {
-    keys = await loadJwks(true); // key rotation: refetch on unknown kid
-    key = keys.get(header.kid ?? "");
-  }
-  if (!key) return null;
-
-  const ok = await crypto.subtle.verify(
-    { name: "ECDSA", hash: "SHA-256" },
-    key,
-    unb64url(parts[2]!) as BufferSource,
-    enc.encode(`${parts[0]!}.${parts[1]!}`),
-  );
-  if (!ok) return null;
-
-  if (payload.iss !== SHOO_ISSUER) return null;
-  if (payload.aud !== expectedAud) return null;
-  if (typeof payload.exp !== "number" || Date.now() / 1000 > payload.exp) return null;
-  if (typeof payload.pairwise_sub !== "string" || !payload.pairwise_sub) return null;
-  if (payload.email !== undefined && typeof payload.email !== "string") return null;
-  if (payload.email_verified !== undefined && typeof payload.email_verified !== "boolean") return null;
-  return payload;
-}
-
 // --- Sessions ---
 
-type ShooIdentity = Pick<ShooClaims, "pairwise_sub" | "email" | "email_verified" | "name" | "picture">;
-
-export async function resolveShooUserId(env: Env, claims: ShooIdentity): Promise<string> {
-  if (!claims.email || claims.email_verified !== true) return claims.pairwise_sub;
-  const existing = await env.DB.prepare(
-    "SELECT id FROM users WHERE email = ? COLLATE NOCASE LIMIT 1",
-  )
-    .bind(claims.email)
-    .first<{ id: string }>();
-  return existing?.id ?? claims.pairwise_sub;
-}
-
-export async function createShooSession(
-  env: Env,
-  claims: ShooIdentity,
-  now = Date.now(),
-  sid = randomId(32),
-): Promise<string> {
-  const verifiedEmail = claims.email_verified === true ? claims.email ?? null : null;
-  let userId = await resolveShooUserId(env, claims);
-  try {
-    await env.DB.prepare(
-      `INSERT INTO users (id, email, name, picture, created_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         email = COALESCE(excluded.email, email),
-         name = COALESCE(excluded.name, name),
-         picture = COALESCE(excluded.picture, picture)`,
-    )
-      .bind(userId, verifiedEmail, claims.name ?? null, claims.picture ?? null, now)
-      .run();
-  } catch (error) {
-    if (!verifiedEmail) throw error;
-    const concurrentUserId = await resolveShooUserId(env, claims);
-    if (concurrentUserId === claims.pairwise_sub) throw error;
-    userId = concurrentUserId;
-    await env.DB.prepare(
-      `UPDATE users SET name=COALESCE(?,name),picture=COALESCE(?,picture) WHERE id=?`,
-    ).bind(claims.name ?? null, claims.picture ?? null, userId).run();
-  }
-  await env.DB.prepare(
-    "INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-  )
-    .bind(sid, userId, now, now + SESSION_TTL_MS)
-    .run();
-  return sid;
-}
-
-interface User {
-  id: string;
-  email: string | null;
-  name: string | null;
-  picture: string | null;
+interface User extends LocalIdentityUser {
+  identity_id: string | null;
 }
 
 function readCookie(req: Request, name: string): string | null {
@@ -221,7 +104,7 @@ async function getSessionUser(req: Request, env: Env): Promise<User | null> {
   const sid = readCookie(req, SESSION_COOKIE);
   if (!sid || !/^[a-f0-9]{32,64}$/.test(sid)) return null;
   const row = await env.DB.prepare(
-    `SELECT u.id, u.email, u.name, u.picture FROM sessions s
+    `SELECT u.id,u.email,u.name,u.picture,u.identity_id FROM sessions s
      JOIN users u ON u.id = s.user_id
      WHERE s.id = ? AND s.expires_at > ?`,
   )
@@ -387,25 +270,7 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
 
   if (req.method !== "GET" && req.method !== "HEAD") {
     const origin = req.headers.get("Origin");
-    if (origin && origin !== url.origin) return json({ error: "bad origin" }, 403);
-  }
-
-  // POST /api/session — exchange a verified shoo id_token for our own session.
-  if (path === "/api/session" && req.method === "POST") {
-    let idToken: string;
-    try {
-      idToken = ((await req.json()) as { id_token?: string }).id_token ?? "";
-    } catch {
-      return json({ error: "invalid body" }, 400);
-    }
-    const claims = await verifyShooIdToken(idToken, `origin:${url.origin}`);
-    if (!claims) return json({ error: "invalid token" }, 401);
-
-    const now = Date.now();
-    const sid = await createShooSession(env, claims, now);
-    ctx.waitUntil(env.DB.prepare("DELETE FROM sessions WHERE expires_at < ?").bind(now).run());
-
-    return json({ ok: true }, 200, { "set-cookie": sessionCookie(sid, SESSION_TTL_MS / 1000) });
+    if (origin !== url.origin) return json({ error: "bad origin" }, 403);
   }
 
   // GET /api/verify — check an API token (used by setup.sh). Bearer-authed.
@@ -418,7 +283,24 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
     return json({ ok: true, user: { name: u?.name ?? null, email: u?.email ?? null } });
   }
 
-  const user = await getSessionUser(req, env);
+  const legacyUser = await getSessionUser(req, env);
+  const identity = await identityFromRequest(req, env);
+  if (identity.present && !identity.claims) return json({ error: "invalid identity assertion" }, 401);
+
+  if (path === "/api/identity/link" && req.method === "POST") {
+    if (!identity.claims) return json({ error: "platform identity required" }, 401);
+    const owner = await verifyApiToken(env, bearer(req));
+    if (!owner) return json({ error: "existing Mail token required" }, 401);
+    const linked = await linkIdentityWithUser(env, identity.claims, owner.userId);
+    return linked ? json({ ok: true, user: linked }) : json({ error: "identity link rejected" }, 409);
+  }
+
+  let user: LocalIdentityUser | null = legacyUser;
+  if (identity.claims) {
+    const resolved = await resolveIdentityUser(env, identity.claims, legacyUser);
+    if (resolved.linkRequired) return json({ error: "identity link required", code: "identity_link_required" }, 409);
+    user = resolved.user;
+  }
   if (!user) return json({ error: "unauthorized" }, 401);
 
   if (path === "/api/session" && req.method === "DELETE") {

@@ -14,6 +14,10 @@
       "custom_domain": true
     },
     {
+      "pattern": "auth.myslop.app",
+      "custom_domain": true
+    },
+    {
       "pattern": "apps.myslop.app",
       "custom_domain": true
     },
@@ -69,5 +73,9 @@
       ],
       "fallthrough": false
     }
-  ]
+  ],
+  "vars": {
+    "IDENTITY_LINKING_DEADLINE": "1788825600000",
+    "IDENTITY_ASSERTION_KEY_VERSION": "1"
+  }
 }

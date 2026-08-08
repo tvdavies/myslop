@@ -3,7 +3,7 @@ import { canReconcileApps, hasActiveDomain, reconciliationDeploymentChanged } fr
 
 describe("reconciliation deployment hashes", () => {
   test("requires a platform owner and rejects app-scoped credentials", () => {
-    const user = { id: "owner", email: null, name: null, picture: null, platform_role: "owner" as const };
+    const user = { id: "owner", email: null, name: null, picture: null, identity_id: null, platform_role: "owner" as const };
     expect(canReconcileApps({ user })).toBe(true);
     expect(canReconcileApps({ user, teamId: "team-myslop", tokenId: "token" })).toBe(true);
     expect(canReconcileApps({ user, appId: "app-a", tokenId: "token" })).toBe(false);

@@ -65,6 +65,7 @@ test("runtime dispatch derives credentials from the app id, not the delivery row
         secrets: [],
         network: [],
         email: true,
+        identity: false,
         schedules: [],
         durableObjects: [],
       },
@@ -76,4 +77,55 @@ test("runtime dispatch derives credentials from the app id, not the delivery row
 
   expect(response.status).toBe(204);
   expect(verified).toBe(true);
+});
+
+test("identity assertions are audience, request, body, and time bound", async () => {
+  const { signIdentityAssertion, verifyIdentityAssertion } = await import("../src/identity-assertion");
+  const secret = "app-identity-secret";
+  const request = new Request("https://files.myslop.app/api/tokens?view=all", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  const assertion = await signIdentityAssertion(secret, request, {
+    aud: "app-files",
+    sub: "mui_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    uid: "legacy-files-user",
+    email: "owner@example.com",
+    email_verified: true,
+    role: "owner",
+    sg: 2,
+  }, { now: 1_800_000_000_000, bodyHash: "a".repeat(64) });
+
+  expect(await verifyIdentityAssertion(secret, assertion, request, "app-files", {
+    now: 1_800_000_010_000,
+    bodyHash: "a".repeat(64),
+  })).toMatchObject({ sub: "mui_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", aud: "app-files", sg: 2 });
+  expect(await verifyIdentityAssertion(secret, assertion, request, "app-mail", {
+    now: 1_800_000_010_000,
+    bodyHash: "a".repeat(64),
+  })).toBeNull();
+  expect(await verifyIdentityAssertion(secret, assertion, new Request("https://files.myslop.app/api/files", { method: "POST" }), "app-files", {
+    now: 1_800_000_010_000,
+    bodyHash: "a".repeat(64),
+  })).toBeNull();
+  expect(await verifyIdentityAssertion(secret, assertion, request, "app-files", {
+    now: 1_800_000_040_000,
+    bodyHash: "a".repeat(64),
+  })).toBeNull();
+});
+
+test("identity assertion key rotation overlaps and then retires the previous key", async () => {
+  const { signIdentityAssertion, verifyIdentityAssertion } = await import("../src/identity-assertion");
+  const request = new Request("https://files.myslop.app/api/me");
+  const claims = {
+    aud: "app-files", sub: "mui_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", uid: "legacy-files-user",
+    email: "owner@example.com", email_verified: true as const, role: "owner" as const, sg: 2,
+  };
+  const oldAssertion = await signIdentityAssertion("old-key", request, claims, { keyVersion: 4 });
+  const newAssertion = await signIdentityAssertion("new-key", request, claims, { keyVersion: 5 });
+  const overlap = { 4: "old-key", 5: "new-key" };
+  expect(await verifyIdentityAssertion(overlap, oldAssertion, request, "app-files")).not.toBeNull();
+  expect(await verifyIdentityAssertion(overlap, newAssertion, request, "app-files")).not.toBeNull();
+  expect(await verifyIdentityAssertion({ 5: "new-key" }, oldAssertion, request, "app-files")).toBeNull();
 });

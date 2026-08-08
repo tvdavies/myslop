@@ -7,7 +7,7 @@ export const SESSION_COOKIE = "__Host-msa_sid";
 export const LEGACY_SESSION_COOKIE = "msa_sid";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
-export const RESERVED_BINDINGS = new Set(["DB", "FILES", "MYSLOP_APP_ID", "MYSLOP_APP_ORIGIN", "MYSLOP_INTERNAL_SECRET"]);
+export const RESERVED_BINDINGS = new Set(["DB", "FILES", "MYSLOP_APP_ID", "MYSLOP_APP_ORIGIN", "MYSLOP_INTERNAL_SECRET", "MYSLOP_IDENTITY_SECRET", "MYSLOP_IDENTITY_KEYS"]);
 
 export { validAppSlug, validSlug } from "./domains";
 

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
-import worker, { createShooSession, resolveShooUserId } from "../src/index";
+import worker from "../src/index";
 
 const encoder = new TextEncoder();
 
@@ -29,69 +28,7 @@ async function appToken(appId: string, secret: string): Promise<string> {
   return `${body}.${btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
 }
 
-function identityDatabase(beforeUserInsert?: (db: Database) => void) {
-  const db = new Database(":memory:");
-  db.exec(`
-    CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT, name TEXT, picture TEXT, created_at INTEGER NOT NULL);
-    CREATE UNIQUE INDEX users_verified_email ON users(email COLLATE NOCASE) WHERE email IS NOT NULL;
-    CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
-  `);
-  let injected = false;
-  const binding = {
-    prepare(sql: string) {
-      let values: unknown[] = [];
-      return {
-        bind(...bound: unknown[]) { values = bound; return this; },
-        first: async <T>() => db.query(sql).get(...values as never[]) as T | null,
-        run: async () => {
-          if (!injected && sql.startsWith("INSERT INTO users") && beforeUserInsert) {
-            injected = true;
-            beforeUserInsert(db);
-          }
-          db.query(sql).run(...values as never[]);
-          return { success: true };
-        },
-      };
-    },
-  };
-  return { db, env: { DB: binding } };
-}
-
 describe("Files app compatibility", () => {
-  test("keeps the verified account and session across Shoo origin aliases", async () => {
-    const { db, env } = identityDatabase();
-    db.query("INSERT INTO users VALUES (?,?,?,?,?)").run("original-user", "tom@lleverage.ai", null, null, 1);
-    await createShooSession(env as never, {
-      pairwise_sub: "alias-specific-user",
-      email: "Tom@Lleverage.ai",
-      email_verified: true,
-    }, 2, "session-id");
-    expect(db.query("SELECT id FROM users ORDER BY id").all()).toEqual([{ id: "original-user" }]);
-    expect(db.query("SELECT user_id FROM sessions WHERE id=?").get("session-id")).toEqual({ user_id: "original-user" });
-  });
-
-  test("does not link unverified email and recovers a concurrent verified login", async () => {
-    const unverified = identityDatabase();
-    unverified.db.query("INSERT INTO users VALUES (?,?,?,?,?)").run("original-user", "tom@lleverage.ai", null, null, 1);
-    await createShooSession(unverified.env as never, {
-      pairwise_sub: "unverified-user",
-      email: "tom@lleverage.ai",
-      email_verified: false,
-    }, 2, "unverified-session");
-    expect(unverified.db.query("SELECT email FROM users WHERE id=?").get("unverified-user")).toEqual({ email: null });
-    expect(await resolveShooUserId(unverified.env as never, { pairwise_sub: "no-email" })).toBe("no-email");
-
-    const concurrent = identityDatabase((db) => {
-      db.query("INSERT INTO users VALUES (?,?,?,?,?)").run("winner", "tom@lleverage.ai", null, null, 1);
-    });
-    await createShooSession(concurrent.env as never, {
-      pairwise_sub: "racing-user",
-      email: "tom@lleverage.ai",
-      email_verified: true,
-    }, 2, "race-session");
-    expect(concurrent.db.query("SELECT user_id FROM sessions WHERE id=?").get("race-session")).toEqual({ user_id: "winner" });
-  });
-
   test("streams public objects with immutable and sandbox headers", async () => {
     const body = new ReadableStream({ start(controller) { controller.enqueue(encoder.encode("<script>ok</script>")); controller.close(); } });
     const env = {
@@ -143,4 +80,72 @@ describe("Files app compatibility", () => {
     const response = await worker.fetch(new Request("https://files.myslop.app/private.txt") as never, env as never, context()) as unknown as Response;
     expect(response.status).toBe(404);
   });
+});
+
+test("Files accepts only a valid platform identity assertion for its app", async () => {
+  const { Database } = await import("bun:sqlite");
+  const { signIdentityAssertion } = await import("../../../platform/src/identity-assertion");
+  const db = new Database(":memory:");
+  try {
+    db.exec(await Bun.file(new URL("../schema.sql", import.meta.url)).text());
+    db.query("INSERT INTO users (id,email,name,picture,identity_id,created_at) VALUES (?,?,?,?,?,?)")
+      .run("legacy-files", "owner@example.com", "Owner", null, "mui_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1);
+    const DB = {
+      prepare(sql: string) {
+        let values: unknown[] = [];
+        return {
+          bind(...bound: unknown[]) { values = bound; return this; },
+          first: async <T>() => db.query(sql).get(...values as never[]) as T | null,
+          all: async <T>() => ({ results: db.query(sql).all(...values as never[]) as T[] }),
+          run: async () => { const result = db.query(sql).run(...values as never[]); return { success: true, meta: { changes: result.changes } }; },
+        };
+      },
+      batch: async (statements: Array<{ run(): Promise<unknown> }>) => Promise.all(statements.map((statement) => statement.run())),
+    };
+    const request = new Request("https://files.myslop.app/api/me");
+    const assertion = await signIdentityAssertion("identity-secret", request, {
+      aud: "app-files", sub: "mui_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", uid: "platform-user",
+      email: "owner@example.com", email_verified: true, name: "Owner", role: "owner", sg: 1,
+    });
+    const workerEnv = {
+      DB,
+      FILES: {
+        async get(key: string) {
+          if (key !== "private/file.txt") return null;
+          return {
+            body: "private contents", httpEtag: '"etag"',
+            writeHttpMetadata() {},
+          };
+        },
+      },
+      EVENTS_SECRET: "events", MYSLOP_APP_ID: "app-files",
+      MYSLOP_IDENTITY_KEYS: JSON.stringify({ 1: "identity-secret" }), MYSLOP_IDENTITY_LINK_DEADLINE: String(Date.now() + 60_000),
+    };
+    const response = await worker.fetch(new Request(request, { headers: { "x-myslop-identity": assertion } }) as never, workerEnv as never, context()) as unknown as Response;
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { user: { id: string } };
+    expect(payload.user.id).toBe("legacy-files");
+
+    db.query("INSERT INTO files (key,user_id,filename,private,created_at) VALUES (?,?,?,?,?)")
+      .run("private/file.txt", "legacy-files", "file.txt", 1, 1);
+    const privateRequest = new Request("https://files.myslop.app/private/file.txt");
+    const privateAssertion = await signIdentityAssertion("identity-secret", privateRequest, {
+      aud: "app-files", sub: "mui_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", uid: "platform-user",
+      email: "owner@example.com", email_verified: true, name: "Owner", role: "owner", sg: 1,
+    });
+    const privateResponse = await worker.fetch(new Request(privateRequest, { headers: { "x-myslop-identity": privateAssertion } }) as never, workerEnv as never, context()) as unknown as Response;
+    expect(privateResponse.status).toBe(200);
+    expect(await privateResponse.text()).toBe("private contents");
+
+    db.query("INSERT INTO users (id,email,name,picture,identity_id,created_at) VALUES (?,?,?,?,?,?)")
+      .run("other-files", "other@example.com", "Other", null, "mui_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1);
+    const otherAssertion = await signIdentityAssertion("identity-secret", privateRequest, {
+      aud: "app-files", sub: "mui_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", uid: "other-platform-user",
+      email: "other@example.com", email_verified: true, name: "Other", role: "viewer", sg: 1,
+    });
+    const otherResponse = await worker.fetch(new Request(privateRequest, { headers: { "x-myslop-identity": otherAssertion } }) as never, workerEnv as never, context()) as unknown as Response;
+    expect(otherResponse.status).toBe(404);
+  } finally {
+    db.close();
+  }
 });

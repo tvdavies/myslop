@@ -2,13 +2,22 @@
 --   bunx wrangler d1 execute myslop-files --remote --file schema.sql
 
 CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,              -- shoo pairwise_sub
+  id TEXT PRIMARY KEY,              -- immutable local user id
   email TEXT,
   name TEXT,
   picture TEXT,
+  identity_id TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_verified_email ON users(email COLLATE NOCASE) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_identity_id ON users(identity_id) WHERE identity_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS identity_links (
+  identity_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  method TEXT NOT NULL CHECK (method IN ('new','legacy_session','api_token','operator')),
+  linked_at INTEGER NOT NULL,
+  UNIQUE (user_id)
+);
 
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,              -- random 128-bit hex, set as HttpOnly cookie

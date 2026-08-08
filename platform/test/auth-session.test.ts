@@ -3,9 +3,10 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import worker from "../src/index";
 import {
   consumeAppSessionExchange,
+  consumeGlobalSignOutExchange,
   createAppSessionExchange,
+  createGlobalSignOutExchange,
   getSessionUser,
-  resolveShooPlatformUserId,
   signOut,
 } from "../src/auth";
 import type { Env } from "../src/types";
@@ -43,27 +44,16 @@ function environment() {
   `);
   return {
     database,
-    env: { CONTROL_DB: { prepare: (sql: string) => new SqliteStatement(database, sql) } } as unknown as Env,
+    env: { CONTROL_DB: {
+      prepare: (sql: string) => new SqliteStatement(database, sql),
+      batch: async (statements: SqliteStatement[]) => Promise.all(statements.map((statement) => statement.run())),
+    } } as unknown as Env,
   };
 }
 
 const awaitableSchema = await Bun.file(new URL("../schema.sql", import.meta.url)).text();
 
 describe("cross-domain platform sessions", () => {
-  test("links only verified Shoo identities by case-insensitive email", async () => {
-    const { env } = environment();
-    expect(await resolveShooPlatformUserId(env, {
-      pairwise_sub: "cloud-subject",
-      email: "TOM@example.com",
-      email_verified: true,
-    })).toBe("original");
-    expect(await resolveShooPlatformUserId(env, {
-      pairwise_sub: "unverified-subject",
-      email: "tom@example.com",
-      email_verified: false,
-    })).toBe("unverified-subject");
-  });
-
   test("uses a one-time code bound to one app hostname", async () => {
     const { env } = environment();
     const request = new Request("https://myslop.cloud/auth/app", {
@@ -75,7 +65,7 @@ describe("cross-domain platform sessions", () => {
 
     expect(await consumeAppSessionExchange(env, code, "other.myslop.app")).toBeNull();
     expect(await consumeAppSessionExchange(env, code, "demo.myslop.app")).toEqual({
-      sessionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      sessionHandle: expect.any(String),
       returnTo: "https://demo.myslop.app/deep?q=1",
     });
     expect(await consumeAppSessionExchange(env, code, "demo.myslop.app")).toBeNull();
@@ -111,6 +101,22 @@ describe("cross-domain platform sessions", () => {
       {} as never,
     ) as unknown as Response;
     expect(csrf.status).toBe(403);
+  });
+
+  test("an app-host sign-out exchange invalidates the root and every app handle", async () => {
+    const { database, env } = environment();
+    const platformRequest = new Request("https://myslop.cloud/", {
+      headers: { cookie: "__Host-msa_sid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    });
+    const loginCallback = await createAppSessionExchange(platformRequest, env, "https://demo.myslop.app/");
+    const appSession = await consumeAppSessionExchange(env, new URL(loginCallback!).searchParams.get("code")!, "demo.myslop.app");
+    const logoutCallback = await createGlobalSignOutExchange(new Request("https://demo.myslop.app/__myslop/signout", {
+      headers: { cookie: `__Host-msa_sid=${appSession!.sessionHandle}` },
+    }), env, "demo", "demo.myslop.app", "https://demo.myslop.app/dashboard");
+    expect(logoutCallback).not.toBeNull();
+    expect(await consumeGlobalSignOutExchange(env, new URL(logoutCallback!).searchParams.get("code")!)).toBe("https://demo.myslop.app/dashboard");
+    expect(database.query("SELECT COUNT(*) count FROM sessions").get()).toEqual({ count: 0 });
+    expect(database.query("SELECT COUNT(*) count FROM app_sessions").get()).toEqual({ count: 0 });
   });
 
   test("rejects expired exchange codes", async () => {

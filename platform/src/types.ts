@@ -18,6 +18,12 @@ export interface Env {
   CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_API_TOKEN: string;
   SECRET_ENCRYPTION_KEY: string;
+  GOOGLE_OAUTH_CLIENT_ID?: string;
+  GOOGLE_OAUTH_CLIENT_SECRET?: string;
+  IDENTITY_LINKING_DEADLINE?: string;
+  IDENTITY_ASSERTION_KEY_VERSION?: string;
+  IDENTITY_DISPATCH_SECRET_PREVIOUS?: string;
+  IDENTITY_DISPATCH_SECRET_NEXT?: string;
   DISPATCH_NAMESPACE?: string;
   ALLOWED_EMAIL_DOMAIN?: string;
 }
@@ -27,6 +33,7 @@ export interface User {
   email: string | null;
   name: string | null;
   picture: string | null;
+  identity_id: string | null;
   platform_role: "member" | "owner";
 }
 

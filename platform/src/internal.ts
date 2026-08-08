@@ -21,6 +21,13 @@ function canonical(method: string, path: string, timestamp: string, nonce: strin
   return `${method.toUpperCase()}\n${path}\n${timestamp}\n${nonce}\n${bodyHash}`;
 }
 
+export async function deriveAppIdentitySecret(masterSecret: string, appId: string): Promise<string> {
+  const derived = new Uint8Array(
+    await crypto.subtle.sign("HMAC", await key(masterSecret), encoder.encode(`myslop-app-identity:v1:${appId}`)),
+  );
+  return base64url(derived);
+}
+
 export async function deriveAppInternalSecret(masterSecret: string, appId: string): Promise<string> {
   const derived = new Uint8Array(
     await crypto.subtle.sign("HMAC", await key(masterSecret), encoder.encode(`myslop-app-internal:v1:${appId}`)),

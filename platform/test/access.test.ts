@@ -62,7 +62,7 @@ async function fixture() {
       prepare: (sql: string) => new SqliteStatement(database, sql),
     },
   } as unknown as Env;
-  const user: User = { id: "member", email: "member@lleverage.ai", name: "Member", picture: null, platform_role: "member" };
+  const user: User = { id: "member", email: "member@lleverage.ai", name: "Member", picture: null, identity_id: null, platform_role: "member" };
   const principal: Principal = { user };
   return { database, env, user, principal };
 }
@@ -106,7 +106,7 @@ describe("app access", () => {
 
   test("ignores grants for suspended members but keeps public access", async () => {
     const { database, env } = await fixture();
-    const user: User = { id: "suspended", email: "suspended@lleverage.ai", name: "Suspended", picture: null, platform_role: "member" };
+    const user: User = { id: "suspended", email: "suspended@lleverage.ai", name: "Suspended", picture: null, identity_id: null, platform_role: "member" };
     const principal: Principal = { user };
     const apps = await listAccessibleApps(env, principal);
     expect(apps.map(({ id }) => id)).toEqual(["public"]);
@@ -117,7 +117,7 @@ describe("app access", () => {
   test("platform owners can access every app across membership boundaries", async () => {
     const { env } = await fixture();
     const principal: Principal = {
-      user: { id: "platform", email: "platform@lleverage.ai", name: "Platform", picture: null, platform_role: "owner" },
+      user: { id: "platform", email: "platform@lleverage.ai", name: "Platform", picture: null, identity_id: null, platform_role: "owner" },
     };
     const apps = await listAccessibleApps(env, principal);
     expect(apps).toHaveLength(3);
@@ -132,7 +132,7 @@ describe("app access", () => {
       VALUES ('other-app','other-app','Other','', 'platform','public','app-other',2,2,'other');
     `);
     const principal: Principal = {
-      user: { id: "platform", email: "platform@lleverage.ai", name: "Platform", picture: null, platform_role: "owner" },
+      user: { id: "platform", email: "platform@lleverage.ai", name: "Platform", picture: null, identity_id: null, platform_role: "owner" },
       tokenId: "token",
       teamId: "team_default",
     };

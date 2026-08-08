@@ -9,7 +9,7 @@ Each app gets:
 - An isolated Cloudflare Worker when `worker.ts` exists
 - An isolated D1 database when migrations exist or it is explicitly requested
 - An isolated R2 bucket only when file storage is explicitly requested
-- Shoo/Google team authentication enforced by the platform dispatcher
+- first-party Google authentication enforced by the platform dispatcher
 - Only its declared server-side secrets
 - Immutable deployments and rollback
 - A browsable team app library
@@ -139,7 +139,7 @@ Install the standalone CLI and obtain a token:
 curl -fsS https://myslop.cloud/setup.sh | bash
 ```
 
-The script opens `https://myslop.cloud/setup` for Shoo authentication, verifies and stores the one-time token at `~/.config/myslop-apps/token`, and installs the CLI into `~/.local/bin`. Then:
+The script opens `https://myslop.cloud/setup` for first-party Google authentication, verifies and stores the one-time token at `~/.config/myslop-apps/token`, and installs the CLI into `~/.local/bin`. Then:
 
 ```sh
 myslop-apps create hello "Hello"
@@ -186,6 +186,16 @@ Apps have a Public, Team, or Restricted audience and one effective role per pers
 - Destructive actions and CLI commands require the exact app slug.
 
 `destroy` removes all immutable Worker versions and static assets, the app D1 database, every object in its R2 bucket and the bucket itself, encrypted secret records, app-scoped tokens, optional attached domain records, deployments, and operational control records. A minimal immutable audit tombstone is retained for security and accountability.
+
+## Identity assertion key rotation
+
+Identity assertions use a versioned, per-app key derived from the platform identity master. Rotate without an authentication gap:
+
+1. Set `IDENTITY_DISPATCH_SECRET_NEXT` to the new master and reconcile identity-capable apps. They receive current and next verification keys while the platform still signs with the current version.
+2. Promote the new value to `INTERNAL_DISPATCH_SECRET`, move the old value to `IDENTITY_DISPATCH_SECRET_PREVIOUS`, increment `IDENTITY_ASSERTION_KEY_VERSION`, and deploy the platform.
+3. Reconcile the apps again, wait longer than the 30-second assertion lifetime, then remove the previous secret.
+
+Never promote the next key until every identity-capable app has been rebound. Rollback app versions are rebound with the active overlap keys by the platform.
 
 ## Current MVP boundaries
 

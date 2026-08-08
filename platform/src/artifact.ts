@@ -3,7 +3,7 @@ import { $ } from "bun";
 import { normalizeAppManifest, resolveManifest, type ResolvedAppManifest, type SourceManifest } from "./manifest";
 import { sha256Hex } from "./core";
 
-const RUNTIME_ABI_VERSION = 2;
+const RUNTIME_ABI_VERSION = 3;
 
 export interface AppAsset {
   path: string;

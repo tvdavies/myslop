@@ -6,14 +6,23 @@ import {
   DASHBOARD_JS_ETAG,
 } from "./dashboard-assets.generated";
 import { serveDashboardAsset, type DashboardAsset } from "./dashboard-assets";
+import {
+  authHealth,
+  authPrivacy,
+  authTerms,
+  beginGoogleLogin,
+  completeGoogleLogin,
+  consumeAuthCompletion,
+} from "./google-auth";
 import skillMd from "./skill.md";
 import cliB64 from "./cli.generated";
 import setupShB64 from "./setup-sh.generated";
 import {
   authenticate,
   consumeAppSessionExchange,
+  consumeGlobalSignOutExchange,
   createAppSessionExchange,
-  exchangeSession,
+  createGlobalSignOutExchange,
   getSessionUser,
   mintToken,
   signOut,
@@ -78,12 +87,15 @@ import { activeTeamsFor, handleOrganizationApi } from "./organization";
 import { buildResourceTopology } from "./resources";
 import { canReconcileApps, hasActiveDomain, reconciliationDeploymentChanged } from "./reconcile";
 import { acceptEmail, dispatchDueSchedules, reconcileAppSchedules, retryEmailDeliveries } from "./runtime";
+import { deriveAppIdentitySecret } from "./internal";
+import { signIdentityAssertion } from "./identity-assertion";
 import { encryptSecret, loadAppSecrets } from "./secrets";
 import type { AppAudience, AppRole, AppRow, DeploymentRow, Env, User } from "./types";
 import { isDashboardPath } from "./ui";
 import {
   appSlugFromHostname,
   appUrl,
+  AUTH_HOST,
   LEGACY_PLATFORM_HOST,
   legacyAppSlugFromHostname,
   PLATFORM_APEX_HOST,
@@ -361,7 +373,7 @@ async function emptyAppBucket(env: Env, app: AppRow): Promise<void> {
     version: 1,
     assets: false,
     worker: true,
-    capabilities: { database: false, files: true, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
+    capabilities: { database: false, files: true, secrets: [], network: [], email: false, identity: false, schedules: [], durableObjects: [] },
   };
   const source = `export default { async fetch(_request, env) {
     for (let page = 0; page < 400; page++) {
@@ -623,7 +635,7 @@ async function handleDeployLocked(req: Request, env: Env, principal: Principal, 
         version: 1,
         assets: false,
         worker: false,
-        capabilities: { database: false, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
+        capabilities: { database: false, files: false, secrets: [], network: [], email: false, identity: false, schedules: [], durableObjects: [] },
       };
       await scheduleUnusedResources(env, current, fallback).catch((cleanup) => console.error("failed resource scheduling failed", cleanup));
     }
@@ -736,7 +748,7 @@ async function handlePruneApp(req: Request, env: Env, principal: Principal, app:
       version: 1,
       assets: false,
       worker: false,
-      capabilities: { database: false, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
+      capabilities: { database: false, files: false, secrets: [], network: [], email: false, identity: false, schedules: [], durableObjects: [] },
     } satisfies ResolvedManifest;
     const removed: string[] = [];
     if (!manifest.capabilities.files && current.r2_bucket) {
@@ -1361,13 +1373,6 @@ async function handleReconcileApp(
 }
 
 async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
-  if (url.pathname === "/api/session" && req.method === "POST") {
-    const origin = req.headers.get("origin");
-    if (origin !== PLATFORM_ORIGIN && origin !== "http://localhost:8787") {
-      return json({ error: "bad origin" }, 403);
-    }
-    return exchangeSession(req, env, ctx);
-  }
   const principal = await authenticate(req, env);
   if (!principal) return json({ error: "unauthorized" }, 401);
   const csrf = ensureCsrf(req, principal);
@@ -1377,6 +1382,35 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
     ctx.waitUntil(env.CONTROL_DB.prepare("UPDATE tokens SET last_used_at=? WHERE id=?").bind(Date.now(), principal.tokenId).run());
   }
   if (url.pathname === "/api/session" && req.method === "DELETE") return signOut(req, env);
+  if (url.pathname === "/api/identity-links" && req.method === "GET") {
+    if (!isPlatformOwner(principal)) return json({ error: "platform owner required" }, 403);
+    const { results } = await env.CONTROL_DB.prepare(
+      `SELECT id,identity_id,scope,candidate_user_id,email,status,proof,created_at,updated_at
+       FROM identity_link_requests WHERE status='pending' ORDER BY created_at`,
+    ).all();
+    return json({ links: results });
+  }
+  const identityLinkMatch = url.pathname.match(/^\/api\/identity-links\/([^/]+)\/approve$/);
+  if (identityLinkMatch && req.method === "POST") {
+    if (!isPlatformOwner(principal)) return json({ error: "platform owner required" }, 403);
+    const body = await req.json().catch(() => ({})) as { confirm?: string };
+    const link = await env.CONTROL_DB.prepare(
+      `SELECT id,identity_id,candidate_user_id FROM identity_link_requests
+       WHERE id=? AND scope='platform' AND status='pending'`,
+    ).bind(decodeURIComponent(identityLinkMatch[1]!)).first<{ id: string; identity_id: string; candidate_user_id: string | null }>();
+    if (!link?.candidate_user_id || body.confirm !== link.candidate_user_id) {
+      return json({ error: "confirm the candidate user id" }, 400);
+    }
+    const updated = await env.CONTROL_DB.prepare(
+      "UPDATE users SET identity_id=? WHERE id=? AND identity_id IS NULL",
+    ).bind(link.identity_id, link.candidate_user_id).run();
+    if (!updated.meta.changes) return json({ error: "identity link conflict" }, 409);
+    await env.CONTROL_DB.prepare(
+      `UPDATE identity_link_requests SET status='approved',proof='operator',reviewed_by=?,updated_at=? WHERE id=?`,
+    ).bind(principal.user.id, Date.now(), link.id).run();
+    await audit(env, { actorId: principal.user.id, action: "identity.link.approved", detail: { linkId: link.id, userId: link.candidate_user_id } });
+    return json({ ok: true });
+  }
   if (url.pathname === "/api/me" && req.method === "GET") {
     const teams = await activeTeamsFor(env, principal);
     return json({
@@ -1581,7 +1615,8 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
     if (!permissions.modifySecrets) return json({ error: "editor access required" }, 403);
     return handleSetSecret(req, env, principal, app, decodeURIComponent(tail.slice("secrets/".length)));
   }
-  if (app.managed_by === "git" && req.method !== "GET") {
+  const reviewedGitRollback = tail === "rollback" && req.method === "POST" && isPlatformOwner(principal);
+  if (app.managed_by === "git" && req.method !== "GET" && !reviewedGitRollback) {
     return json({ error: "app is managed by git; update its myslop.json and run reconciliation" }, 409);
   }
   if (tail === "adopt" && req.method === "POST") return handleAdoptResources(req, env, principal, app);
@@ -1654,7 +1689,7 @@ async function sweepUnusedResources(env: Env): Promise<void> {
         version: 1,
         assets: false,
         worker: false,
-        capabilities: { database: false, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
+        capabilities: { database: false, files: false, secrets: [], network: [], email: false, identity: false, schedules: [], durableObjects: [] },
       } satisfies ResolvedManifest;
       if (!manifest.capabilities.files && app.r2_bucket && app.r2_delete_after && app.r2_delete_after <= Date.now()) {
         await removeFileStorage(env, app);
@@ -1739,10 +1774,63 @@ export function appRequestHeaders(req: Request, app: AppRow, user: User | null, 
   return headers;
 }
 
+async function appDispatchHeaders(
+  req: Request,
+  env: Env,
+  app: AppRow,
+  manifest: ResolvedManifest,
+  user: User | null,
+  role: AppRole | null,
+): Promise<Headers> {
+  const headers = appRequestHeaders(req, app, user, role);
+  if (!manifest.capabilities.identity || !user?.identity_id || !role) return headers;
+  const identity = await env.CONTROL_DB.prepare(
+    "SELECT email,email_verified,name,picture,session_generation FROM identity_users WHERE id=? AND status='active'",
+  ).bind(user.identity_id).first<{
+    email: string; email_verified: number; name: string | null; picture: string | null; session_generation: number;
+  }>();
+  if (!identity || identity.email_verified !== 1) return headers;
+  let bodyHash: string | undefined;
+  if (req.body && req.method !== "GET" && req.method !== "HEAD") {
+    const rawLength = req.headers.get("content-length");
+    const length = rawLength === null ? Number.NaN : Number(rawLength);
+    if (!Number.isSafeInteger(length) || length < 0 || length > 1024 * 1024) return headers;
+    const body = new Uint8Array(await req.clone().arrayBuffer());
+    if (body.byteLength !== length) return headers;
+    bodyHash = await sha256Hex(body);
+  }
+  headers.set("x-myslop-identity", await signIdentityAssertion(
+    await deriveAppIdentitySecret(env.INTERNAL_DISPATCH_SECRET, app.id),
+    req,
+    {
+      aud: app.id,
+      sub: user.identity_id,
+      uid: user.id,
+      email: identity.email,
+      email_verified: true,
+      ...(identity.name ? { name: identity.name } : {}),
+      ...(identity.picture ? { picture: identity.picture } : {}),
+      role,
+      sg: identity.session_generation,
+    },
+    { bodyHash, keyVersion: Math.max(1, Number(env.IDENTITY_ASSERTION_KEY_VERSION) || 1) },
+  ));
+  return headers;
+}
+
 async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Response> {
   if (url.pathname === "/__email" || url.pathname === "/__scheduled") return new Response("not found\n", { status: 404 });
   const app = await appForHostname(env, url.hostname);
   if (!app || !app.active_version) return new Response("app not found\n", { status: 404 });
+  if (url.pathname === "/__myslop/signout" && req.method === "GET") {
+    const returnTo = url.searchParams.get("returnTo") ?? "";
+    const callback = await createGlobalSignOutExchange(req, env, app.id, url.hostname, returnTo);
+    if (!callback) return new Response("sign-out request expired or invalid\n", { status: 400 });
+    return new Response(null, {
+      status: 302,
+      headers: { location: callback, "set-cookie": sessionCookie("", 0), "cache-control": "no-store" },
+    });
+  }
   if (url.pathname === "/__myslop/session" && req.method === "GET") {
     const exchange = await consumeAppSessionExchange(env, url.searchParams.get("code") ?? "", url.hostname);
     if (!exchange) return new Response("session exchange expired or invalid\n", { status: 400 });
@@ -1750,24 +1838,20 @@ async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Respo
       status: 302,
       headers: {
         location: exchange.returnTo,
-        "set-cookie": sessionCookie(exchange.sessionId, SESSION_TTL_MS / 1000),
+        "set-cookie": sessionCookie(exchange.sessionHandle, SESSION_TTL_MS / 1000),
         "cache-control": "no-store",
         "referrer-policy": "no-referrer",
       },
     });
   }
   if (url.pathname.startsWith("/__myslop/")) return new Response("not found\n", { status: 404 });
-  const user = app.visibility === "public" ? null : await getSessionUser(req, env);
+  const user = await getSessionUser(req, env);
   const role = await effectiveAppRole(env, app, user);
   if (!role) {
     const wantsJson = req.headers.get("accept")?.includes("application/json") || req.headers.has("authorization");
     if (wantsJson) return json({ error: "unauthorized" }, 401);
     const returnTo = encodeURIComponent(url.toString());
     return Response.redirect(`${PLATFORM_ORIGIN}/?returnTo=${returnTo}`, 302);
-  }
-  if (app.visibility !== "public" && user && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
-    const origin = req.headers.get("origin");
-    if (origin !== url.origin) return new Response("bad origin\n", { status: 403 });
   }
   const deployment = await env.CONTROL_DB.prepare(
     "SELECT * FROM deployments WHERE app_id=? AND version=? AND status='active'",
@@ -1781,8 +1865,11 @@ async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Respo
   }
 
   if (deployment.worker_key && deployment.worker_name) {
-    const headers = appRequestHeaders(req, app, user, role);
     const manifest = parseResolvedManifest(JSON.parse(deployment.manifest_json));
+    if (user && (app.visibility !== "public" || manifest.capabilities.identity) && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+      if (req.headers.get("origin") !== url.origin) return new Response("bad origin\n", { status: 403 });
+    }
+    const headers = await appDispatchHeaders(req, env, app, manifest, user, role);
     const worker = env.DISPATCHER.get(deployment.worker_name, {}, {
       limits: { cpuMs: 10_000, subRequests: 1_000 },
       outbound: { policy: { appId: app.id, hosts: manifest.capabilities.network } },
@@ -1817,6 +1904,25 @@ export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
     const localPlatform = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    if (url.hostname === AUTH_HOST) {
+      if (url.pathname === "/health" && (req.method === "GET" || req.method === "HEAD")) return authHealth(env);
+      if (url.pathname === "/login" && req.method === "GET") return beginGoogleLogin(req, env);
+      if (url.pathname === "/oauth/callback" && req.method === "GET") return completeGoogleLogin(req, env);
+      if (url.pathname === "/privacy" && req.method === "GET") return authPrivacy();
+      if (url.pathname === "/terms" && req.method === "GET") return authTerms();
+      return new Response("not found\n", { status: 404, headers: { "cache-control": "no-store" } });
+    }
+    if (url.hostname === PLATFORM_HOST && url.pathname === "/__myslop/auth-callback" && req.method === "GET") {
+      return consumeAuthCompletion(req, env);
+    }
+    if (url.hostname === PLATFORM_HOST && url.pathname === "/__myslop/signout" && req.method === "GET") {
+      const returnTo = await consumeGlobalSignOutExchange(env, url.searchParams.get("code") ?? "");
+      if (!returnTo) return new Response("sign-out request expired or invalid\n", { status: 400 });
+      return new Response(null, {
+        status: 302,
+        headers: { location: returnTo, "set-cookie": sessionCookie("", 0), "cache-control": "no-store" },
+      });
+    }
     if (PASSTHROUGH_HOSTS.has(url.hostname)) return fetch(req);
     if (url.hostname === PLATFORM_APEX_HOST || url.hostname === "www.myslop.app") {
       return Response.redirect(platformRedirect(url).toString(), 308);
@@ -1835,6 +1941,10 @@ export default {
       const target = new URL(url.pathname, appUrl(legacySlug));
       target.search = url.search;
       return Response.redirect(target.toString(), 308);
+    }
+    if (url.pathname === "/__myslop/session" && req.method === "DELETE") {
+      if (req.headers.get("origin") !== url.origin) return new Response("bad origin\n", { status: 403 });
+      return signOut(req, env);
     }
     if (url.hostname !== PLATFORM_HOST && !localPlatform) return handleAppRequest(req, env, url);
     if (url.pathname.startsWith("/api/")) return handleApi(req, env, url, ctx);
