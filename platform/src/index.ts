@@ -8,6 +8,7 @@ import {
 import { serveDashboardAsset, type DashboardAsset } from "./dashboard-assets";
 import {
   authHealth,
+  authHome,
   authPrivacy,
   authTerms,
   beginGoogleLogin,
@@ -1905,6 +1906,7 @@ export default {
     const url = new URL(req.url);
     const localPlatform = url.hostname === "localhost" || url.hostname === "127.0.0.1";
     if (url.hostname === AUTH_HOST) {
+      if (url.pathname === "/" && req.method === "GET") return authHome();
       if (url.pathname === "/health" && (req.method === "GET" || req.method === "HEAD")) return authHealth(env);
       if (url.pathname === "/login" && req.method === "GET") return beginGoogleLogin(req, env);
       if (url.pathname === "/oauth/callback" && req.method === "GET") return completeGoogleLogin(req, env);

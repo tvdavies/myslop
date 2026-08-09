@@ -379,10 +379,58 @@ export function authHealth(env: Env): Response {
   });
 }
 
+function informationPage(
+  title: string,
+  introduction: string,
+  sections: Array<{ heading: string; text: string }>,
+): Response {
+  const escape = (value: string) => value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character]!);
+  const content = sections.map(({ heading, text }) =>
+    `<section><h2>${escape(heading)}</h2><p>${escape(text)}</p></section>`
+  ).join("");
+  return new Response(
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} · Myslop</title><style>body{font:15px system-ui;margin:0;background:#f7f7f7;color:#171717}.page{width:min(680px,calc(100% - 40px));margin:48px auto;padding:32px;background:#fff;border:1px solid #ddd;border-radius:14px}.mark{font-weight:700;margin-bottom:28px}h1{font-size:26px;margin:0 0 12px}h2{font-size:17px;margin:28px 0 8px}p{line-height:1.6;color:#555;margin:0}nav{display:flex;gap:18px;margin-top:32px;padding-top:20px;border-top:1px solid #e5e5e5}a{color:inherit}</style><main class="page"><div class="mark">Myslop</div><h1>${escape(title)}</h1><p>${escape(introduction)}</p>${content}<nav><a href="/">Authentication</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="https://myslop.cloud">Open Myslop</a></nav></main></html>`,
+    { headers: authHeaders() },
+  );
+}
+
+export function authHome(): Response {
+  return informationPage(
+    "Authentication",
+    "Myslop is a platform for deploying and securely accessing small applications at myslop.app. Google Sign-In lets Myslop identify you without receiving your Google password.",
+    [
+      { heading: "How sign-in works", text: "Google verifies your account at accounts.google.com. Myslop receives only your stable Google account identifier and verified basic profile, then creates its own host-only session." },
+      { heading: "Application access", text: "Your team and application permissions determine what you can open. Myslop shares identity with an application only after an explicit handoff, and never shares Google OAuth tokens." },
+      { heading: "Support", text: "Questions about authentication, privacy, or account deletion can be sent to tom@lleverage.ai." },
+    ],
+  );
+}
+
 export function authPrivacy(): Response {
-  return page("Privacy", "Myslop uses Google profile identity only to authenticate you, preserve your account ownership, and enforce access. OAuth tokens are not stored or shared with apps.");
+  return informationPage(
+    "Privacy policy",
+    "Last updated 9 August 2026. This policy explains how Myslop handles Google profile information used for authentication.",
+    [
+      { heading: "Information collected", text: "Myslop receives your Google account subject identifier, verified email address, name, and profile picture. It does not receive your Google password." },
+      { heading: "How information is used", text: "The information is used only to authenticate you, preserve account ownership, enforce team and application permissions, prevent abuse, and maintain security audit records." },
+      { heading: "Storage and tokens", text: "Identity and session records are stored in Myslop's Cloudflare-hosted databases. Google authorization responses are processed server-side. Google access and ID tokens are not retained, exposed to browser JavaScript, or shared with applications." },
+      { heading: "Sharing", text: "After you confirm an application handoff, Myslop may provide that application with signed identity claims containing your Myslop identity, verified email, profile name or picture, and application role. Myslop does not sell identity data or use it for advertising." },
+      { heading: "Retention and deletion", text: "Identity mappings and security audit records are retained while needed to operate and protect Myslop. To request account access, correction, or deletion, contact tom@lleverage.ai. Required security or legal records may be retained for a limited period." },
+    ],
+  );
 }
 
 export function authTerms(): Response {
-  return page("Terms", "Use Myslop authentication only for accounts you control. Access remains subject to your team and application permissions.");
+  return informationPage(
+    "Terms of service",
+    "By using Myslop authentication, you agree to use it only for accounts and applications you are authorized to access.",
+    [
+      { heading: "Access", text: "Authentication does not grant application access by itself. Access remains subject to platform, team, and application permissions and may be suspended to protect users or the service." },
+      { heading: "Acceptable use", text: "Do not attempt to bypass access controls, impersonate another person, interfere with the service, or use Myslop for unlawful activity." },
+      { heading: "Service availability", text: "Myslop is provided without a guarantee of uninterrupted availability. Features and these terms may change as the service evolves." },
+      { heading: "Contact", text: "Questions about these terms can be sent to tom@lleverage.ai." },
+    ],
+  );
 }

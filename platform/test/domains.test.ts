@@ -20,6 +20,16 @@ describe("managed domains", () => {
     expect(slugSuggestions("demo", "myslop", "abc123")).toEqual(["demo-myslop", "demo-abc123"]);
   });
 
+  test("serves authentication from the platform namespace", async () => {
+    const response = await worker.fetch(
+      new Request("https://auth.myslop.cloud/") as never,
+      {} as never,
+      {} as never,
+    ) as unknown as Response;
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Myslop is a platform");
+  });
+
   test("recognizes legacy app hosts without confusing the legacy platform", () => {
     expect(legacyAppSlugFromHostname("demo.apps.myslop.app")).toBe("demo");
     expect(legacyAppSlugFromHostname("apps.myslop.app")).toBeNull();
