@@ -14,7 +14,7 @@
       "custom_domain": true
     },
     {
-      "pattern": "auth.myslop.app",
+      "pattern": "auth.myslop.cloud",
       "custom_domain": true
     },
     {

@@ -189,9 +189,7 @@ describe("control migration 011", () => {
         id: "owner", email: "owner@lleverage.ai", platform_role: "owner",
       });
       expect(database.query("SELECT id,user_id FROM sessions WHERE id='legacy'").get()).toEqual({ id: "legacy", user_id: "owner" });
-      expect(database.query("SELECT reason FROM reserved_app_slugs WHERE slug='auth'").get()).toEqual({
-        reason: "first-party authentication service",
-      });
+      expect(database.query("SELECT reason FROM reserved_app_slugs WHERE slug='auth'").get()).toBeNull();
 
       database.exec("INSERT INTO users (id,email,platform_role,created_at) VALUES ('inside','new@lleverage.ai','member',2)");
       database.exec("INSERT INTO users (id,email,platform_role,created_at) VALUES ('outside','new@example.com','member',3)");

@@ -95,9 +95,6 @@ CREATE TABLE auth_rate_limits (
 );
 CREATE INDEX auth_rate_limits_expiry ON auth_rate_limits(expires_at);
 
-INSERT OR IGNORE INTO reserved_app_slugs (slug,reason,created_at)
-VALUES ('auth','first-party authentication service',0);
-
 DROP TRIGGER IF EXISTS default_user_team_membership;
 CREATE TRIGGER default_user_team_membership
 AFTER INSERT ON users

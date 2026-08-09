@@ -264,7 +264,6 @@ CREATE TABLE IF NOT EXISTS reserved_app_slugs (
 );
 INSERT OR IGNORE INTO reserved_app_slugs (slug,reason,created_at) VALUES
   ('apps','legacy platform hostname',0),
-  ('auth','first-party authentication service',0),
   ('events','existing Myslop service',0),
   ('hello','existing Myslop service',0),
   ('os','existing Myslop service',0),

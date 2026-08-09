@@ -4,7 +4,7 @@ import { ApiError, apiRequest, setUnauthorizedHandler } from "@/lib/api";
 import { isSafeInternalDashboardRoute, safeExternalAppReturn } from "@/lib/routing";
 import type { MeResponse, TokenCreationResponse } from "@/types/api";
 
-const AUTH_ORIGIN = "https://auth.myslop.app";
+const AUTH_ORIGIN = "https://auth.myslop.cloud";
 
 interface SetupToken {
   name: string;

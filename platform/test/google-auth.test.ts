@@ -109,16 +109,16 @@ test("first-party Google flow uses one-time state and a separate host-only compl
   }) as typeof fetch);
 
   try {
-    const start = await beginGoogleLogin(new Request("https://auth.myslop.app/login?returnTo=https%3A%2F%2Fmyslop.cloud%2Ftokens", {
+    const start = await beginGoogleLogin(new Request("https://auth.myslop.cloud/login?returnTo=https%3A%2F%2Fmyslop.cloud%2Ftokens", {
       headers: { "cf-connecting-ip": "203.0.113.10" },
     }), env);
     expect(start.status).toBe(302);
     const authorize = new URL(start.headers.get("location")!);
     expectedNonce = authorize.searchParams.get("nonce")!;
     expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
-    expect(authorize.searchParams.get("redirect_uri")).toBe("https://auth.myslop.app/oauth/callback");
+    expect(authorize.searchParams.get("redirect_uri")).toBe("https://auth.myslop.cloud/oauth/callback");
 
-    const callbackUrl = new URL("https://auth.myslop.app/oauth/callback");
+    const callbackUrl = new URL("https://auth.myslop.cloud/oauth/callback");
     callbackUrl.searchParams.set("code", "google-code");
     callbackUrl.searchParams.set("state", authorize.searchParams.get("state")!);
     const callback = await completeGoogleLogin(new Request(callbackUrl, {

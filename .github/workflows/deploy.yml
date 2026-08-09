@@ -165,7 +165,7 @@ jobs:
           echo "wildcard_route_present=$route_present" >> "$GITHUB_OUTPUT"
           echo "cloud_domain_present=$(jq -r 'any(.result[]; .hostname == "myslop.cloud")' <<<"$domains")" >> "$GITHUB_OUTPUT"
           echo "apex_domain_present=$(jq -r 'any(.result[]; .hostname == "myslop.app")' <<<"$domains")" >> "$GITHUB_OUTPUT"
-          echo "auth_domain_present=$(jq -r 'any(.result[]; .hostname == "auth.myslop.app")' <<<"$domains")" >> "$GITHUB_OUTPUT"
+          echo "auth_domain_present=$(jq -r 'any(.result[]; .hostname == "auth.myslop.cloud")' <<<"$domains")" >> "$GITHUB_OUTPUT"
       - name: Deploy platform
         if: needs.changes.outputs.platform == 'true'
         working-directory: platform
@@ -192,7 +192,7 @@ jobs:
             done
             return 1
           }
-          check https://auth.myslop.app/health
+          check https://auth.myslop.cloud/health
           check https://files.myslop.app/skill.md
           check https://mail.myslop.app/skill.md
           check https://commercial-dashboard.myslop.app/
@@ -213,7 +213,7 @@ jobs:
             curl --fail --silent --show-error -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/zones/8b4874725e68c294532a60e11e93e32e/workers/routes/$route_id" >/dev/null
           fi
           domains="$(curl --fail --silent --show-error -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains/records")"
-          for entry in "myslop.cloud:${{ steps.platform-before.outputs.cloud_domain_present }}" "myslop.app:${{ steps.platform-before.outputs.apex_domain_present }}" "auth.myslop.app:${{ steps.platform-before.outputs.auth_domain_present }}"; do
+          for entry in "myslop.cloud:${{ steps.platform-before.outputs.cloud_domain_present }}" "myslop.app:${{ steps.platform-before.outputs.apex_domain_present }}" "auth.myslop.cloud:${{ steps.platform-before.outputs.auth_domain_present }}"; do
             hostname="${entry%%:*}"
             existed="${entry#*:}"
             domain_id="$(jq -r --arg hostname "$hostname" '.result[] | select(.hostname == $hostname) | .id' <<<"$domains" | head -1)"
@@ -314,7 +314,7 @@ jobs:
           bunx wrangler rollback "$PREVIOUS_VERSION" --yes --message "Automatic rollback after app reconciliation failure"
           if [ "${{ steps.platform-before.outputs.auth_domain_present }}" != "true" ]; then
             domains="$(curl --fail --silent --show-error -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains/records")"
-            domain_id="$(jq -r '.result[] | select(.hostname == "auth.myslop.app") | .id' <<<"$domains" | head -1)"
+            domain_id="$(jq -r '.result[] | select(.hostname == "auth.myslop.cloud") | .id' <<<"$domains" | head -1)"
             if [ -n "$domain_id" ]; then
               curl --fail --silent --show-error -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains/records/$domain_id" >/dev/null
             fi

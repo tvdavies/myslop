@@ -21,7 +21,7 @@ curl -sS --fail-with-body -X PUT -T ./screenshot.png \
 
 ## Auth model
 
-- **Dashboard**: Google authorization-code + PKCE runs server-side at `auth.myslop.app`. `myslop.cloud` owns the host-only root session and explicitly hands a distinct app session to Files. The dispatcher signs a short-lived, app-bound identity assertion; Files verifies it before resolving the immutable Myslop identity. Existing local user IDs remain attached to all files and tokens.
+- **Dashboard**: Google authorization-code + PKCE runs server-side at `auth.myslop.cloud`. `myslop.cloud` owns the host-only root session and explicitly hands a distinct app session to Files. The dispatcher signs a short-lived, app-bound identity assertion; Files verifies it before resolving the immutable Myslop identity. Existing local user IDs remain attached to all files and tokens.
 - **Uploads**: per-user tokens (`msf_…`, 256-bit) minted/revoked in the dashboard. Only a SHA-256 hash is stored; the secret is shown once. Revocation is immediate.
 - **Legacy shared token**: retired (2026-07-27). The `UPLOAD_TOKEN` secret was deleted and the code path removed — only minted `msf_` tokens authorize uploads, so every upload is tracked to an account.
 

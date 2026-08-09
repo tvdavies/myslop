@@ -45,7 +45,7 @@ Mint tokens in the dashboard. Every request needs `Authorization: Bearer <msm_to
 
 ## Auth model
 
-- **Dashboard**: Google authorization-code + PKCE runs server-side at `auth.myslop.app`. `myslop.cloud` owns the host-only root session and explicitly hands a distinct app session to Mail. The dispatcher signs a short-lived, app-bound identity assertion; Mail verifies it before resolving the immutable Myslop identity. Existing local user IDs remain attached to all inboxes and tokens.
+- **Dashboard**: Google authorization-code + PKCE runs server-side at `auth.myslop.cloud`. `myslop.cloud` owns the host-only root session and explicitly hands a distinct app session to Mail. The dispatcher signs a short-lived, app-bound identity assertion; Mail verifies it before resolving the immutable Myslop identity. Existing local user IDs remain attached to all inboxes and tokens.
 - **API tokens**: per-user `msm_…` (256-bit), only a SHA-256 hash stored, shown once, revocable. The old shared `API_TOKEN` secret was **retired** (2026-07-27) — only minted tokens authorize.
 
 ## Agent setup
