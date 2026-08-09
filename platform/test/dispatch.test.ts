@@ -36,6 +36,7 @@ const user: User = {
   email: "user@example.com",
   name: "User",
   picture: null,
+  identity_id: null,
   platform_role: "member",
 };
 

@@ -39,7 +39,7 @@ async function fixture() {
     CONTROL_DB: { prepare: (sql: string) => new SqliteStatement(database, sql) },
   } as unknown as Env;
   const principal: Principal = {
-    user: { id: "owner", email: "owner@lleverage.ai", name: "Owner", picture: null, platform_role: "owner" },
+    user: { id: "owner", email: "owner@lleverage.ai", name: "Owner", picture: null, identity_id: null, platform_role: "owner" },
   };
   return { database, env, principal };
 }

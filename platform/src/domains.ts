@@ -1,6 +1,8 @@
 export const PLATFORM_HOST = "myslop.cloud";
 export const PLATFORM_ORIGIN = `https://${PLATFORM_HOST}`;
 export const PLATFORM_APEX_HOST = "myslop.app";
+export const AUTH_HOST = "auth.myslop.cloud";
+export const AUTH_ORIGIN = `https://${AUTH_HOST}`;
 export const LEGACY_PLATFORM_HOST = "apps.myslop.app";
 export const APP_HOST_SUFFIX = ".myslop.app";
 export const LEGACY_APP_HOST_SUFFIX = ".apps.myslop.app";

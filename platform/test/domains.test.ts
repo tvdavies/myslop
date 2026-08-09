@@ -14,9 +14,20 @@ describe("managed domains", () => {
     expect(appSlugFromHostname("commercial-dashboard.myslop.app")).toBe("commercial-dashboard");
     expect(appSlugFromHostname("deep.demo.myslop.app")).toBeNull();
     expect(validAppSlug("apps")).toBe(false);
+    expect(validAppSlug("auth")).toBe(true);
     expect(validAppSlug("www")).toBe(false);
     expect(validAppSlug("events")).toBe(false);
     expect(slugSuggestions("demo", "myslop", "abc123")).toEqual(["demo-myslop", "demo-abc123"]);
+  });
+
+  test("serves authentication from the platform namespace", async () => {
+    const response = await worker.fetch(
+      new Request("https://auth.myslop.cloud/") as never,
+      {} as never,
+      {} as never,
+    ) as unknown as Response;
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Myslop is a platform");
   });
 
   test("recognizes legacy app hosts without confusing the legacy platform", () => {

@@ -105,7 +105,7 @@
   <div id="view-signin" class="hero" hidden>
     <h1>mail.myslop.app</h1>
     <p id="signin-sub">Disposable inboxes on @myslop.app. Sign in to manage your addresses and API tokens.</p>
-    <button class="primary" id="signin-btn">Sign in with shoo.dev</button>
+    <button class="primary" id="signin-btn">Sign in with Google</button>
   </div>
 
   <div id="view-setup" hidden>
@@ -200,10 +200,8 @@
 
 <script>
 (() => {
-  const SHOO = "https://shoo.dev";
   const ORIGIN = location.origin;
   const MODE = location.pathname === "/setup" ? "setup" : "dash";
-  const REDIRECT_URI = ORIGIN + (MODE === "setup" ? "/setup" : "/dashboard");
   const $ = (id) => document.getElementById(id);
 
   const toastEl = $("toast");
@@ -234,7 +232,13 @@
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     });
     if (res.status === 401) { const e = new Error("unauthorized"); e.unauthorized = true; throw e; }
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      const error = new Error(detail.error || res.statusText);
+      error.code = detail.code;
+      error.status = res.status;
+      throw error;
+    }
     return res.json();
   }
   function svg(p) {
@@ -244,71 +248,13 @@
   const ICON_TRASH = svg('<path d="M2.5 4.5h11M6.5 4.5v-2h3v2M4 4.5l.7 9h6.6l.7-9"/><path d="M6.5 7v4M9.5 7v4"/>');
   const ICON_COPY = svg('<rect x="5.5" y="5.5" width="8" height="8" rx="1"/><path d="M2.5 10.5v-7a1 1 0 0 1 1-1h7"/>');
 
-  // --- shoo PKCE ---
-  function randStr(len) {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    const rand = crypto.getRandomValues(new Uint8Array(len));
-    let out = "";
-    for (const b of rand) out += chars[b % chars.length];
-    return out;
-  }
-  function b64url(bytes) {
-    let bin = "";
-    for (const b of bytes) bin += String.fromCharCode(b);
-    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-  }
+  // --- first-party Myslop authentication ---
   async function signIn() {
-    const verifier = randStr(64);
-    const state = randStr(32);
-    sessionStorage.setItem("shoo_pkce", JSON.stringify({ verifier, state, t: Date.now() }));
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-    const u = new URL("/authorize", SHOO);
-    u.searchParams.set("client_id", "origin:" + ORIGIN);
-    u.searchParams.set("redirect_uri", REDIRECT_URI);
-    u.searchParams.set("state", state);
-    u.searchParams.set("code_challenge", b64url(new Uint8Array(digest)));
-    u.searchParams.set("code_challenge_method", "S256");
-    u.searchParams.set("pii", "true");
-    location.assign(u);
-  }
-  async function handleCallback() {
-    const params = new URLSearchParams(location.search);
-    const code = params.get("code");
-    const state = params.get("state");
-    if (!code || !state) return false;
-    params.delete("code"); params.delete("state");
-    const qs = params.toString();
-    history.replaceState({}, "", location.pathname + (qs ? "?" + qs : ""));
-    let pkce = null;
-    try { pkce = JSON.parse(sessionStorage.getItem("shoo_pkce")); } catch {}
-    sessionStorage.removeItem("shoo_pkce");
-    if (!pkce || pkce.state !== state || Date.now() - pkce.t > 10 * 60 * 1000) {
-      toast("Sign-in expired, try again", true);
-      return false;
-    }
-    const res = await fetch(new URL("/token", SHOO), {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        client_id: "origin:" + ORIGIN,
-        redirect_uri: REDIRECT_URI,
-        code,
-        code_verifier: pkce.verifier,
-      }),
-    });
-    if (!res.ok) { toast("Token exchange failed", true); return false; }
-    const tok = await res.json();
-    const sess = await fetch("/api/session", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id_token: tok.id_token }),
-    });
-    if (!sess.ok) { toast("Session creation failed", true); return false; }
-    return true;
+    const login = new URL("https://myslop.cloud/");
+    login.searchParams.set("returnTo", location.href);
+    location.assign(login);
   }
 
-  // --- addresses ---
   async function loadAddresses() {
     const { addresses } = await api("/api/addresses");
     $("addr-table").hidden = addresses.length === 0;
@@ -486,12 +432,12 @@
     signIn();
   });
   $("signout-btn").addEventListener("click", async () => {
-    await fetch("/api/session", { method: "DELETE" });
-    location.reload();
+    await fetch("/api/session", { method: "DELETE" }).catch(() => undefined);
+    const returnTo = `${location.origin}/dashboard`;
+    location.assign(`/__myslop/signout?returnTo=${encodeURIComponent(returnTo)}`);
   });
 
   async function boot() {
-    try { await handleCallback(); } catch (err) { toast("Sign-in failed: " + err.message, true); }
     try {
       const { user } = await api("/api/me");
       if (MODE === "setup") { await runSetupMode(); return; }
@@ -500,6 +446,17 @@
       show("view-app");
       await Promise.all([loadAddresses(), loadTokens()]);
     } catch (err) {
+      if (err.code === "identity_link_required") {
+        const token = prompt("Paste an existing Mail API token to link this identity to your account.");
+        if (token) {
+          const linked = await fetch("/api/identity/link", { method: "POST", headers: { authorization: "Bearer " + token.trim() } });
+          if (linked.ok) { location.reload(); return; }
+          toast("Identity link failed", true);
+        }
+        $("signin-sub").textContent = "Your Google identity must be linked to the existing account before continuing.";
+        show("view-signin");
+        return;
+      }
       if (!err.unauthorized) { toast(err.message, true); show("view-signin"); return; }
       if (MODE === "setup" && !sessionStorage.getItem("setup_auth_tried")) {
         sessionStorage.setItem("setup_auth_tried", "1");

@@ -30,7 +30,7 @@ class SqliteStatement {
   }
 }
 
-const admin: User = { id: "admin", email: "admin@lleverage.ai", name: "Admin", picture: null, platform_role: "member" };
+const admin: User = { id: "admin", email: "admin@lleverage.ai", name: "Admin", picture: null, identity_id: null, platform_role: "member" };
 
 async function fixture() {
   const database = new Database(":memory:");

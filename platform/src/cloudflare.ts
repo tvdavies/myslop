@@ -1,5 +1,5 @@
 import type { ResolvedManifest } from "./manifest";
-import { deriveAppInternalSecret } from "./internal";
+import { deriveAppIdentitySecret, deriveAppInternalSecret } from "./internal";
 import type { AppRow, Env } from "./types";
 
 interface ApiEnvelope<T> {
@@ -148,6 +148,30 @@ export async function uploadUserWorker(env: Env, options: WorkerUploadOptions): 
         ? await deriveAppInternalSecret(env.INTERNAL_DISPATCH_SECRET, app.id)
         : env.INTERNAL_DISPATCH_SECRET,
     });
+  }
+  if (manifest.capabilities.identity) {
+    const keyVersion = Math.max(1, Number(env.IDENTITY_ASSERTION_KEY_VERSION) || 1);
+    const identityKeys: Record<string, string> = {
+      [keyVersion]: await deriveAppIdentitySecret(env.INTERNAL_DISPATCH_SECRET, app.id),
+    };
+    if (env.IDENTITY_DISPATCH_SECRET_PREVIOUS && keyVersion > 1) {
+      identityKeys[String(keyVersion - 1)] = await deriveAppIdentitySecret(env.IDENTITY_DISPATCH_SECRET_PREVIOUS, app.id);
+    }
+    if (env.IDENTITY_DISPATCH_SECRET_NEXT) {
+      identityKeys[String(keyVersion + 1)] = await deriveAppIdentitySecret(env.IDENTITY_DISPATCH_SECRET_NEXT, app.id);
+    }
+    bindings.push(
+      {
+        type: "secret_text",
+        name: "MYSLOP_IDENTITY_KEYS",
+        text: JSON.stringify(identityKeys),
+      },
+      {
+        type: "plain_text",
+        name: "MYSLOP_IDENTITY_LINK_DEADLINE",
+        text: env.IDENTITY_LINKING_DEADLINE ?? "0",
+      },
+    );
   }
   for (const durableObject of manifest.capabilities.durableObjects) {
     bindings.push({

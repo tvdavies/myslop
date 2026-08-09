@@ -90,6 +90,7 @@ describe("dispatch Worker upload", () => {
           secrets: [],
           network: [],
           email: false,
+          identity: false,
           schedules: [],
           durableObjects: [{ className: "InboxHub", binding: "INBOX_HUB" }],
         },
@@ -107,6 +108,55 @@ describe("dispatch Worker upload", () => {
         new_tag: "vmail-v1",
         new_sqlite_classes: ["InboxHub"],
       });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+});
+
+describe("identity Worker binding", () => {
+  test("provisions a domain-separated per-app identity secret", async () => {
+    let bindings: Array<Record<string, unknown>> = [];
+    const fetchMock = spyOn(globalThis, "fetch").mockImplementation((async (_input, init) => {
+      const metadata = JSON.parse(String((init?.body as FormData).get("metadata"))) as { bindings: Array<Record<string, unknown>> };
+      bindings = metadata.bindings;
+      return Response.json({ success: true, result: {} });
+    }) as typeof fetch);
+    try {
+      await uploadUserWorker({
+        CLOUDFLARE_ACCOUNT_ID: "account",
+        CLOUDFLARE_API_TOKEN: "token",
+        INTERNAL_DISPATCH_SECRET: "master-secret",
+        IDENTITY_LINKING_DEADLINE: "1788825600000",
+        IDENTITY_ASSERTION_KEY_VERSION: "4",
+        IDENTITY_DISPATCH_SECRET_PREVIOUS: "previous-master",
+        IDENTITY_DISPATCH_SECRET_NEXT: "next-master",
+      } as Env, {
+        source: "export default {}",
+        app: { id: "app-files", slug: "files" } as AppRow,
+        workerName: "files-v1",
+        manifest: {
+          version: 1,
+          assets: false,
+          worker: true,
+          capabilities: {
+            database: false,
+            files: false,
+            secrets: [],
+            network: [],
+            email: false,
+            identity: true,
+            schedules: [],
+            durableObjects: [],
+          },
+        },
+      });
+      const identity = bindings.find(({ name }) => name === "MYSLOP_IDENTITY_KEYS");
+      const internal = bindings.find(({ name }) => name === "MYSLOP_INTERNAL_SECRET");
+      expect(identity?.type).toBe("secret_text");
+      expect(Object.keys(JSON.parse(String(identity?.text)))).toEqual(["3", "4", "5"]);
+      expect(internal).toBeUndefined();
+      expect(bindings.find(({ name }) => name === "MYSLOP_IDENTITY_LINK_DEADLINE")?.text).toBe("1788825600000");
     } finally {
       fetchMock.mockRestore();
     }

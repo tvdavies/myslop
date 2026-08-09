@@ -4,8 +4,7 @@ import { ApiError, apiRequest, setUnauthorizedHandler } from "@/lib/api";
 import { isSafeInternalDashboardRoute, safeExternalAppReturn } from "@/lib/routing";
 import type { MeResponse, TokenCreationResponse } from "@/types/api";
 
-const SHOO = "https://shoo.dev";
-const OAUTH_REDIRECT = `${location.origin}/`;
+const AUTH_ORIGIN = "https://auth.myslop.cloud";
 
 interface SetupToken {
   name: string;
@@ -35,18 +34,6 @@ function readStoredJson<T>(key: string): T | null {
   }
 }
 
-function randomString(length: number): string {
-  const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-  const bytes = crypto.getRandomValues(new Uint8Array(length));
-  return [...bytes].map((byte) => characters[byte % characters.length]).join("");
-}
-
-function base64url(bytes: Uint8Array): string {
-  let value = "";
-  for (const byte of bytes) value += String.fromCharCode(byte);
-  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
 async function beginSignIn(): Promise<void> {
   const parameters = new URLSearchParams(location.search);
   const external = safeExternalAppReturn(parameters.get("returnTo"));
@@ -61,53 +48,9 @@ async function beginSignIn(): Promise<void> {
     if (name) sessionStorage.setItem("setup_name", name);
   }
 
-  const verifier = randomString(64);
-  const oauthState = randomString(32);
-  sessionStorage.setItem("shoo_pkce", JSON.stringify({ verifier, state: oauthState, time: Date.now() }));
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-  const authorize = new URL("/authorize", SHOO);
-  for (const [key, value] of Object.entries({
-    client_id: `origin:${location.origin}`,
-    redirect_uri: OAUTH_REDIRECT,
-    state: oauthState,
-    code_challenge: base64url(new Uint8Array(digest)),
-    code_challenge_method: "S256",
-    pii: "true",
-  })) {
-    authorize.searchParams.set(key, value);
-  }
-  location.assign(authorize);
-}
-
-async function completeCallback(): Promise<void> {
-  const parameters = new URLSearchParams(location.search);
-  const code = parameters.get("code");
-  const oauthState = parameters.get("state");
-  if (!code || !oauthState) return;
-
-  history.replaceState({}, "", "/");
-  const pkce = readStoredJson<{ verifier?: string; state?: string }>("shoo_pkce");
-  sessionStorage.removeItem("shoo_pkce");
-  if (!pkce?.verifier || pkce.state !== oauthState) throw new Error("Sign-in expired. Please try again.");
-
-  const tokenResponse = await fetch(new URL("/token", SHOO), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: `origin:${location.origin}`,
-      redirect_uri: OAUTH_REDIRECT,
-      code,
-      code_verifier: pkce.verifier,
-    }),
-  });
-  if (!tokenResponse.ok) throw new Error("Token exchange failed");
-  const token = await tokenResponse.json() as { id_token?: string };
-  await apiRequest("/api/session", { method: "POST", body: { id_token: token.id_token } });
-
-  const restorePath = sessionStorage.getItem("post_auth_path");
-  sessionStorage.removeItem("post_auth_path");
-  if (isSafeInternalDashboardRoute(restorePath, location.origin)) history.replaceState({}, "", restorePath!);
+  const login = new URL("/login", AUTH_ORIGIN);
+  login.searchParams.set("returnTo", location.href);
+  location.assign(login);
 }
 
 async function createSetupToken(): Promise<SetupToken> {
@@ -144,7 +87,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const controller = new AbortController();
     void (async () => {
       try {
-        await completeCallback();
         const me = await apiRequest<MeResponse>("/api/me", { signal: controller.signal });
         if (controller.signal.aborted) return;
         if (location.pathname === "/setup") {

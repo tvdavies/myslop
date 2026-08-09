@@ -52,9 +52,9 @@ export function SignInScreen() {
           }}
         >
           {busy ? <LoaderCircle className="animate-spin" /> : <LogIn />}
-          Sign in with Lleverage Google
+          Sign in with Google
         </Button>
-        <p className="text-xs text-muted-foreground">Authentication is handled by Shoo and returns you to the page you requested.</p>
+        <p className="text-xs text-muted-foreground">Authentication is handled by Myslop and returns you to the page you requested.</p>
       </section>
     </main>
   );

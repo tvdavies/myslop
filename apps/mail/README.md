@@ -2,7 +2,7 @@
 
 Disposable email at **https://mail.myslop.app** — the `mail` app on the Myslop platform, backed by the adopted `myslop-mail` R2 bucket (raw messages) and D1 database (users, API tokens, inbox ownership). Any address `<name>@myslop.app` receives mail via a catch-all; the API lets you wait for and read it.
 
-Sign in at **https://mail.myslop.app/dashboard** ([shoo.dev](https://shoo.dev)) to mint API tokens, claim addresses, and read mail.
+Sign in at **https://mail.myslop.app/dashboard** through first-party Myslop authentication to mint API tokens, claim addresses, and read mail.
 
 ## Ownership & lease model
 
@@ -36,7 +36,7 @@ Mint tokens in the dashboard. Every request needs `Authorization: Bearer <msm_to
 
 ## Dashboard & web surfaces
 
-- `GET /dashboard` — shoo sign-in, address list with per-inbox message viewer, token management.
+- `GET /dashboard` — first-party Google sign-in through Myslop, address list with per-inbox message viewer, token management.
 - `GET /setup` — signs in and auto-mints a token named from `?name=`, shown on a clean copy page (used by `setup.sh`).
 - `GET /setup.sh` — client setup: `curl -fsS https://mail.myslop.app/setup.sh | bash` opens `/setup`, waits for the pasted token, verifies via `GET /api/verify`, and persists `MYSLOP_MAIL_TOKEN` (bash/zsh/fish/profile + `~/.config/myslop-mail/token`).
 - `GET /skill` — human-readable page rendering the skill verbatim + install options.
@@ -45,7 +45,7 @@ Mint tokens in the dashboard. Every request needs `Authorization: Bearer <msm_to
 
 ## Auth model
 
-- **Dashboard**: shoo.dev PKCE in the browser; the worker verifies the ES256 `id_token` against shoo's JWKS (`aud origin:https://mail.myslop.app`) and issues a 30-day session cookie. Users keyed by shoo `pairwise_sub`.
+- **Dashboard**: Google authorization-code + PKCE runs server-side at `auth.myslop.cloud`. `myslop.cloud` owns the host-only root session and explicitly hands a distinct app session to Mail. The dispatcher signs a short-lived, app-bound identity assertion; Mail verifies it before resolving the immutable Myslop identity. Existing local user IDs remain attached to all inboxes and tokens.
 - **API tokens**: per-user `msm_…` (256-bit), only a SHA-256 hash stored, shown once, revocable. The old shared `API_TOKEN` secret was **retired** (2026-07-27) — only minted tokens authorize.
 
 ## Agent setup

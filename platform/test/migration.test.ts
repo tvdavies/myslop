@@ -147,3 +147,56 @@ describe("control migration 010", () => {
     }
   });
 });
+
+describe("control migration 011", () => {
+  test("adds first-party identities without changing existing users, sessions, or team access", async () => {
+    const database = new Database(":memory:");
+    try {
+      database.exec(`
+        PRAGMA foreign_keys=ON;
+        CREATE TABLE users (
+          id TEXT PRIMARY KEY,email TEXT,name TEXT,picture TEXT,
+          platform_role TEXT NOT NULL DEFAULT 'member',created_at INTEGER NOT NULL
+        );
+        CREATE TABLE teams (
+          id TEXT PRIMARY KEY,slug TEXT NOT NULL,name TEXT NOT NULL,
+          allowed_email_domain TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE team_members (
+          team_id TEXT NOT NULL,user_id TEXT NOT NULL,role TEXT NOT NULL,status TEXT NOT NULL,
+          created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(team_id,user_id)
+        );
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),
+          created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL
+        );
+        CREATE TABLE apps (id TEXT PRIMARY KEY,slug TEXT NOT NULL);
+        CREATE TABLE app_session_exchanges (
+          code_hash TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id),
+          hostname TEXT NOT NULL,return_to TEXT NOT NULL,expires_at INTEGER NOT NULL,created_at INTEGER NOT NULL
+        );
+        CREATE TABLE reserved_app_slugs (slug TEXT PRIMARY KEY,reason TEXT NOT NULL,created_at INTEGER NOT NULL);
+        CREATE TRIGGER default_user_team_membership AFTER INSERT ON users BEGIN
+          INSERT OR IGNORE INTO team_members VALUES ('team_default',NEW.id,'member','active',NEW.created_at,NEW.created_at);
+        END;
+        INSERT INTO teams VALUES ('team_default','lleverage','Lleverage','lleverage.ai',0,0);
+        INSERT INTO users VALUES ('owner','owner@lleverage.ai','Owner',NULL,'owner',1);
+        INSERT INTO sessions VALUES ('legacy','owner',1,9999999999999);
+      `);
+      database.exec(await Bun.file(new URL("../control-migrations/011_first_party_identity.sql", import.meta.url)).text());
+
+      expect(database.query("SELECT id,email,platform_role FROM users WHERE id='owner'").get()).toEqual({
+        id: "owner", email: "owner@lleverage.ai", platform_role: "owner",
+      });
+      expect(database.query("SELECT id,user_id FROM sessions WHERE id='legacy'").get()).toEqual({ id: "legacy", user_id: "owner" });
+      expect(database.query("SELECT reason FROM reserved_app_slugs WHERE slug='auth'").get()).toBeNull();
+
+      database.exec("INSERT INTO users (id,email,platform_role,created_at) VALUES ('inside','new@lleverage.ai','member',2)");
+      database.exec("INSERT INTO users (id,email,platform_role,created_at) VALUES ('outside','new@example.com','member',3)");
+      expect(database.query("SELECT user_id FROM team_members WHERE user_id IN ('inside','outside') ORDER BY user_id").all())
+        .toEqual([{ user_id: "inside" }]);
+    } finally {
+      database.close();
+    }
+  });
+});

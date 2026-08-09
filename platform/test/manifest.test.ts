@@ -7,7 +7,7 @@ describe("capability manifest", () => {
       version: 1,
       assets: true,
       worker: false,
-      capabilities: { database: false, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
+      capabilities: { database: false, files: false, secrets: [], network: [], email: false, identity: false, schedules: [], durableObjects: [] },
     });
   });
 
@@ -19,6 +19,7 @@ describe("capability manifest", () => {
     const manifest = resolveManifest({
       capabilities: {
         files: true,
+        identity: true,
         secrets: ["HUBSPOT_TOKEN"],
         network: ["API.HUBAPI.COM"],
       },
@@ -29,6 +30,7 @@ describe("capability manifest", () => {
       secrets: ["HUBSPOT_TOKEN"],
       network: ["api.hubapi.com"],
       email: false,
+      identity: true,
       schedules: [],
       durableObjects: [],
     });
@@ -39,6 +41,7 @@ describe("capability manifest", () => {
       app: { visibility: "public" },
       capabilities: {
         email: true,
+        identity: false,
         schedules: ["17 3 * * *"],
         durableObjects: [{ class: "InboxHub" }],
       },
@@ -49,6 +52,7 @@ describe("capability manifest", () => {
       secrets: [],
       network: [],
       email: true,
+      identity: false,
       schedules: ["17 3 * * *"],
       durableObjects: [{ className: "InboxHub", binding: "INBOX_HUB" }],
     });
@@ -89,7 +93,7 @@ describe("capability manifest", () => {
       assets: false,
       worker: true,
       typo: true,
-      capabilities: { database: false, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
+      capabilities: { database: false, files: false, secrets: [], network: [], email: false, identity: false, schedules: [], durableObjects: [] },
     })).toThrow("unknown deployment manifest field");
     expect(() => parseResolvedManifest({
       version: 1,
@@ -104,7 +108,7 @@ describe("capability manifest", () => {
       version: 1,
       assets: false,
       worker: true,
-      capabilities: { database: true, files: false, secrets: [], network: [], email: false, schedules: [], durableObjects: [] },
+      capabilities: { database: true, files: false, secrets: [], network: [], email: false, identity: false, schedules: [], durableObjects: [] },
     });
     expect(manifest.capabilities.database).toBe(true);
   });

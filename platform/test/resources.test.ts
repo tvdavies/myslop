@@ -47,6 +47,7 @@ describe("resource topology", () => {
           secrets: ["TOKEN"],
           network: ["api.example.com"],
           email: true,
+          identity: false,
           schedules: ["17 3 * * *"],
           durableObjects: [],
         },

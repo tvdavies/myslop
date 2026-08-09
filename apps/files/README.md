@@ -2,7 +2,7 @@
 
 Public file host at **https://files.myslop.app** — the `files` app on the Myslop platform, backed by the adopted `myslop-files` R2 bucket and D1 database for users, API tokens, and file metadata.
 
-Sign in at **https://files.myslop.app/dashboard** (auth by [shoo.dev](https://shoo.dev)) to mint upload tokens, see your files, make them private, or delete them.
+Sign in at **https://files.myslop.app/dashboard** through first-party Myslop authentication to mint upload tokens, see your files, make them private, or delete them.
 
 ## API
 
@@ -21,7 +21,7 @@ curl -sS --fail-with-body -X PUT -T ./screenshot.png \
 
 ## Auth model
 
-- **Dashboard**: shoo.dev PKCE flow in the browser (`/authorize` → `/token`); the worker verifies the ES256 `id_token` against shoo's JWKS (`iss https://shoo.dev`, `aud origin:https://files.myslop.app`) and issues its own 30-day session (random id in D1, `HttpOnly` `Secure` `SameSite=Lax` cookie). Users are keyed by shoo's `pairwise_sub`.
+- **Dashboard**: Google authorization-code + PKCE runs server-side at `auth.myslop.cloud`. `myslop.cloud` owns the host-only root session and explicitly hands a distinct app session to Files. The dispatcher signs a short-lived, app-bound identity assertion; Files verifies it before resolving the immutable Myslop identity. Existing local user IDs remain attached to all files and tokens.
 - **Uploads**: per-user tokens (`msf_…`, 256-bit) minted/revoked in the dashboard. Only a SHA-256 hash is stored; the secret is shown once. Revocation is immediate.
 - **Legacy shared token**: retired (2026-07-27). The `UPLOAD_TOKEN` secret was deleted and the code path removed — only minted `msf_` tokens authorize uploads, so every upload is tracked to an account.
 

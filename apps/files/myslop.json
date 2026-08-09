@@ -21,8 +21,6 @@
     "secrets": [
       "EVENTS_SECRET"
     ],
-    "network": [
-      "shoo.dev"
-    ]
+    "identity": true
   }
 }

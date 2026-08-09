@@ -98,6 +98,7 @@ export const MANIFEST_SCHEMA = {
         },
         network: { type: "array", uniqueItems: true, items: { type: "string", pattern: "^(?!.*\\.\\.)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$" } },
         email: { type: "boolean" },
+        identity: { type: "boolean" },
         schedules: {
           type: "array",
           maxItems: 3,
@@ -184,6 +185,7 @@ export interface SourceManifest {
     secrets?: string[];
     network?: string[];
     email?: boolean;
+    identity?: boolean;
     schedules?: string[];
     durableObjects?: SourceDurableObject[];
   };
@@ -204,6 +206,7 @@ export interface ResolvedManifest {
     secrets: string[];
     network: string[];
     email: boolean;
+    identity: boolean;
     schedules: string[];
     durableObjects: ResolvedDurableObject[];
   };
@@ -394,9 +397,9 @@ export function resolveManifest(source: unknown, detected: Detection): ResolvedM
     throw new Error("capabilities must be an object");
   }
   const capabilities = input.capabilities ?? {};
-  const unknownCapability = Object.keys(capabilities).find((key) => !["database", "files", "secrets", "network", "email", "schedules", "durableObjects"].includes(key));
+  const unknownCapability = Object.keys(capabilities).find((key) => !["database", "files", "secrets", "network", "email", "identity", "schedules", "durableObjects"].includes(key));
   if (unknownCapability) throw new Error(`unknown capability: ${unknownCapability}`);
-  for (const key of ["database", "files", "email"] as const) {
+  for (const key of ["database", "files", "email", "identity"] as const) {
     if (capabilities[key] !== undefined && typeof capabilities[key] !== "boolean") {
       throw new Error(`capabilities.${key} must be true or false`);
     }
@@ -423,12 +426,13 @@ export function resolveManifest(source: unknown, detected: Detection): ResolvedM
       secrets: unique(secrets),
       network: unique(network.map((host) => host.toLowerCase())),
       email: capabilities.email === true,
+      identity: capabilities.identity === true,
       schedules: normalizeSchedules(capabilities.schedules),
       durableObjects: normalizeDurableObjects(capabilities.durableObjects),
     },
   };
   const runtime = resolved.capabilities;
-  const needsWorker = runtime.database || runtime.files || runtime.secrets.length > 0 || runtime.network.length > 0 || runtime.email || runtime.schedules.length > 0 || runtime.durableObjects.length > 0;
+  const needsWorker = runtime.database || runtime.files || runtime.secrets.length > 0 || runtime.network.length > 0 || runtime.email || runtime.identity || runtime.schedules.length > 0 || runtime.durableObjects.length > 0;
   if (needsWorker && !resolved.worker) throw new Error("runtime capabilities require worker.ts");
   return resolved;
 }
@@ -443,7 +447,7 @@ export function parseResolvedManifest(value: unknown): ResolvedManifest {
   }
   const capabilities = input.capabilities;
   if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) throw new Error("invalid deployment capabilities");
-  const unknownCapability = Object.keys(capabilities).find((key) => !["database", "files", "secrets", "network", "email", "schedules", "durableObjects"].includes(key));
+  const unknownCapability = Object.keys(capabilities).find((key) => !["database", "files", "secrets", "network", "email", "identity", "schedules", "durableObjects"].includes(key));
   if (unknownCapability) throw new Error(`unknown deployment capability: ${unknownCapability}`);
   if (
     typeof capabilities.database !== "boolean" ||
@@ -451,6 +455,7 @@ export function parseResolvedManifest(value: unknown): ResolvedManifest {
     !Array.isArray(capabilities.secrets) ||
     !Array.isArray(capabilities.network) ||
     (capabilities.email !== undefined && typeof capabilities.email !== "boolean") ||
+    (capabilities.identity !== undefined && typeof capabilities.identity !== "boolean") ||
     (capabilities.schedules !== undefined && !Array.isArray(capabilities.schedules)) ||
     (capabilities.durableObjects !== undefined && !Array.isArray(capabilities.durableObjects))
   ) {
@@ -465,6 +470,7 @@ export function parseResolvedManifest(value: unknown): ResolvedManifest {
         secrets: capabilities.secrets,
         network: capabilities.network,
         email: capabilities.email ?? false,
+        identity: capabilities.identity ?? false,
         schedules: capabilities.schedules ?? [],
         durableObjects: (capabilities.durableObjects ?? []).map(({ className, binding }) => ({ class: className, binding })),
       },
