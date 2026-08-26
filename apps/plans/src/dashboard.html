@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>plans.myslop.app</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23374151'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' font-family='sans-serif' fill='%23fff'%3Ep%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f8f9fa;
+    --panel: #ffffff;
+    --border: #e2e5e9;
+    --text: #1f2328;
+    --dim: #6b7280;
+    --accent: #2563eb;
+    --danger: #dc2626;
+    --ok: #15803d;
+    --warn: #b45309;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 24px 80px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+  .logo { font-weight: 600; font-size: 15px; }
+  .logo .muted { color: var(--dim); font-weight: 400; }
+  .userbox { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; }
+  .userbox img { width: 26px; height: 26px; border-radius: 50%; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--dim); margin: 32px 0 10px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  button {
+    font: inherit; cursor: pointer; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); border-radius: 6px; padding: 6px 12px;
+  }
+  button:hover { background: #f3f4f6; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover { background: #1d4ed8; }
+  button.small { padding: 3px 9px; font-size: 12.5px; }
+  button.iconbtn {
+    padding: 5px; width: 28px; height: 28px; display: inline-flex;
+    align-items: center; justify-content: center; color: var(--dim);
+  }
+  button.iconbtn:hover { color: var(--text); }
+  button.iconbtn.danger:hover { color: var(--danger); border-color: var(--danger); background: #fef2f2; }
+  input[type=text] {
+    font: inherit; background: var(--panel); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 6px 10px; min-width: 220px;
+  }
+  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #fafbfc; }
+  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--dim); font-weight: 500; }
+  .pname { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .pname svg { flex: none; color: var(--dim); }
+  .pname a { color: var(--text); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pname a:hover { color: var(--accent); text-decoration: underline; }
+  .dim { color: var(--dim); font-size: 12.5px; white-space: nowrap; }
+  .empty { padding: 26px 14px; color: var(--dim); }
+  .status {
+    font-size: 12px; padding: 2px 10px; border-radius: 99px;
+    border: 1px solid var(--border); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  }
+  .status.approved { color: var(--ok); border-color: #bbe3c8; background: #f0fdf4; }
+  .status.changes_requested { color: var(--warn); border-color: #f5d9a8; background: #fef8ec; }
+  .row-actions { display: flex; gap: 5px; justify-content: flex-end; }
+  .toolbar { display: flex; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .secret-reveal { margin: 12px 14px; padding: 12px 14px; border: 1px solid #bfd3f8; border-radius: 6px; background: #eff4fe; }
+  .secret-reveal code { word-break: break-all; font-size: 13px; }
+  .secret-reveal p { color: var(--dim); font-size: 12.5px; margin-top: 6px; }
+  .setup-cta { display: flex; justify-content: center; margin-top: 28px; }
+  .btn-link {
+    display: inline-block; text-decoration: none; font-size: 13.5px;
+    color: var(--text); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 7px; padding: 9px 18px;
+  }
+  .btn-link:hover { background: #f3f4f6; border-color: var(--dim); }
+  .hero { max-width: 420px; margin: 90px auto; text-align: center; }
+  .hero h1 { font-size: 22px; margin-bottom: 10px; font-weight: 600; }
+  .hero p { color: var(--dim); margin-bottom: 26px; }
+  .token-card {
+    max-width: 560px; margin: 80px auto; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; padding: 28px; text-align: center;
+  }
+  .token-card h1 { font-size: 18px; margin-bottom: 6px; }
+  .token-card .sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+  .token-box {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px; word-break: break-all; font-size: 14px; margin-bottom: 14px;
+  }
+  .token-card .note { color: var(--dim); font-size: 12.5px; margin-top: 16px; }
+  .token-card a { color: var(--accent); }
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #1f2328; color: #fff; border-radius: 8px;
+    padding: 9px 18px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 10; font-size: 13px;
+  }
+  #toast.show { opacity: 1; }
+  #toast.error { background: var(--danger); }
+  @media (max-width: 720px) { .hide-sm { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">plans<span class="muted">.myslop.app</span></div>
+    <div class="userbox" id="userbox" hidden>
+      <img id="user-pic" alt="" hidden>
+      <span id="user-name"></span>
+      <button class="small" id="signout-btn">Sign out</button>
+    </div>
+  </header>
+
+  <div id="view-loading" class="hero"><p>Loading…</p></div>
+
+  <div id="view-signin" class="hero" hidden>
+    <h1>plans.myslop.app</h1>
+    <p id="signin-sub">Agent-authored plans, reviewed by humans. Sign in to manage your plans and API tokens.</p>
+    <button class="primary" id="signin-btn">Sign in with shoo.dev</button>
+  </div>
+
+  <div id="view-setup" hidden>
+    <div class="token-card">
+      <h1>Your API token</h1>
+      <p class="sub" id="setup-token-name"></p>
+      <div class="token-box mono" id="setup-secret"></div>
+      <button class="primary" id="setup-copy">Copy token</button>
+      <p class="note">Paste it into the terminal running the setup script.<br>
+        This token is shown once — manage or revoke it in the <a href="/dashboard">dashboard</a>.</p>
+    </div>
+  </div>
+
+  <div id="view-app" hidden>
+    <h2>Plans</h2>
+    <div class="panel">
+      <table id="plans-table" hidden>
+        <thead>
+          <tr><th>Title</th><th>Status</th><th class="hide-sm">Version</th><th class="hide-sm">Comments</th><th class="hide-sm">Updated</th><th></th></tr>
+        </thead>
+        <tbody id="plans-body"></tbody>
+      </table>
+      <div class="empty" id="plans-empty" hidden>
+        No plans yet — plans created with your tokens show up here.
+      </div>
+    </div>
+
+    <h2>API tokens</h2>
+    <div class="panel">
+      <div class="toolbar">
+        <input type="text" id="token-name" placeholder="Token name (e.g. laptop, claude)">
+        <button class="primary" id="token-create">Generate token</button>
+      </div>
+      <div class="secret-reveal" id="secret-reveal" hidden>
+        <code id="secret-value"></code>
+        <p>Shown once — paste it into the setup script on the machine that needs it.
+          <button class="small" id="secret-copy">Copy</button></p>
+      </div>
+      <table id="tokens-table" hidden>
+        <thead>
+          <tr><th>Name</th><th>Token</th><th class="hide-sm">Created</th><th class="hide-sm">Last used</th><th></th></tr>
+        </thead>
+        <tbody id="tokens-body"></tbody>
+      </table>
+      <div class="empty" id="tokens-empty" hidden>No tokens yet — generate one above.</div>
+    </div>
+
+    <div class="setup-cta">
+      <a class="btn-link" href="/skill">Set up an agent or new machine →</a>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+(() => {
+  const SHOO = "https://shoo.dev";
+  const ORIGIN = location.origin;
+  const MODE = location.pathname === "/setup" ? "setup" : "dash";
+  const REDIRECT_URI = ORIGIN + (MODE === "setup" ? "/setup" : "/dashboard");
+  const $ = (id) => document.getElementById(id);
+
+  // --- helpers ---
+  const toastEl = $("toast");
+  let toastTimer;
+  function toast(msg, isError) {
+    toastEl.textContent = msg;
+    toastEl.className = "show" + (isError ? " error" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toastEl.className = ""), 3000);
+  }
+  function show(view) {
+    for (const v of ["view-loading", "view-signin", "view-setup", "view-app"]) $(v).hidden = v !== view;
+    $("userbox").hidden = view !== "view-app";
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function fmtDate(ts) {
+    return ts ? new Date(ts).toISOString().slice(0, 10) : "—";
+  }
+  async function copyText(text) {
+    await navigator.clipboard.writeText(text);
+    toast("Copied");
+  }
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      headers: opts.body ? { "content-type": "application/json" } : {},
+      ...opts,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    if (res.status === 401) { const e = new Error("unauthorized"); e.unauthorized = true; throw e; }
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    return res.json();
+  }
+
+  // --- icons ---
+  function svg(paths) {
+    return `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+  }
+  const ICON_PLAN = svg('<path d="M4 2h5.5L13 5.5V14H4z"/><path d="M9.5 2v3.5H13"/><path d="M6 8.5h4M6 11h4M6 6h1.5"/>');
+  const ICON_COPY = svg('<rect x="5.5" y="5.5" width="8" height="8" rx="1"/><path d="M2.5 10.5v-7a1 1 0 0 1 1-1h7"/>');
+  const ICON_TRASH = svg('<path d="M2.5 4.5h11M6.5 4.5v-2h3v2M4 4.5l.7 9h6.6l.7-9"/><path d="M6.5 7v4M9.5 7v4"/>');
+
+  const STATUS_LABEL = { open: "Open", approved: "Approved", changes_requested: "Changes requested" };
+
+  // --- shoo PKCE ---
+  function randStr(len) {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    const rand = crypto.getRandomValues(new Uint8Array(len));
+    let out = "";
+    for (const b of rand) out += chars[b % chars.length];
+    return out;
+  }
+  function b64url(bytes) {
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+  async function signIn() {
+    const verifier = randStr(64);
+    const state = randStr(32);
+    sessionStorage.setItem("shoo_pkce", JSON.stringify({ verifier, state, t: Date.now() }));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+    const u = new URL("/authorize", SHOO);
+    u.searchParams.set("client_id", "origin:" + ORIGIN);
+    u.searchParams.set("redirect_uri", REDIRECT_URI);
+    u.searchParams.set("state", state);
+    u.searchParams.set("code_challenge", b64url(new Uint8Array(digest)));
+    u.searchParams.set("code_challenge_method", "S256");
+    u.searchParams.set("pii", "true");
+    location.assign(u);
+  }
+  async function handleCallback() {
+    const params = new URLSearchParams(location.search);
+    const code = params.get("code");
+    const state = params.get("state");
+    if (!code || !state) return false;
+    params.delete("code");
+    params.delete("state");
+    const qs = params.toString();
+    history.replaceState({}, "", location.pathname + (qs ? "?" + qs : ""));
+    let pkce = null;
+    try { pkce = JSON.parse(sessionStorage.getItem("shoo_pkce")); } catch {}
+    sessionStorage.removeItem("shoo_pkce");
+    if (!pkce || pkce.state !== state || Date.now() - pkce.t > 10 * 60 * 1000) {
+      toast("Sign-in expired, try again", true);
+      return false;
+    }
+    const res = await fetch(new URL("/token", SHOO), {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: "origin:" + ORIGIN,
+        redirect_uri: REDIRECT_URI,
+        code,
+        code_verifier: pkce.verifier,
+      }),
+    });
+    if (!res.ok) { toast("Token exchange failed", true); return false; }
+    const tok = await res.json();
+    const sess = await fetch("/api/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id_token: tok.id_token }),
+    });
+    if (!sess.ok) { toast("Session creation failed", true); return false; }
+    return true;
+  }
+
+  // --- plans ---
+  async function loadPlans() {
+    const { plans } = await api("/api/plans");
+    $("plans-table").hidden = plans.length === 0;
+    $("plans-empty").hidden = plans.length !== 0;
+    $("plans-body").innerHTML = plans.map((p) => `
+      <tr data-id="${esc(p.id)}" data-title="${esc(p.title)}" data-url="${esc(p.url)}">
+        <td><div class="pname">${ICON_PLAN}<a href="/p/${esc(p.id)}">${esc(p.title)}</a></div></td>
+        <td><span class="status ${esc(p.status)}">${STATUS_LABEL[p.status] || esc(p.status)}</span></td>
+        <td class="dim hide-sm">v${p.current_version}</td>
+        <td class="dim hide-sm">${p.comment_count ? `${p.unresolved_count} open / ${p.comment_count}` : "—"}</td>
+        <td class="dim hide-sm">${fmtDate(p.updated_at)}</td>
+        <td>
+          <div class="row-actions">
+            <button class="iconbtn" data-act="copy" title="Copy URL">${ICON_COPY}</button>
+            <button class="iconbtn danger" data-act="delete" title="Delete">${ICON_TRASH}</button>
+          </div>
+        </td>
+      </tr>`).join("");
+  }
+  $("plans-body").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    const tr = btn.closest("tr");
+    const id = tr.dataset.id;
+    const title = tr.dataset.title;
+    try {
+      if (btn.dataset.act === "copy") {
+        await copyText(tr.dataset.url);
+      } else if (btn.dataset.act === "delete") {
+        if (!confirm(`Delete "${title}"?\n\nAll versions, comments and reviews will be removed permanently.`)) return;
+        await api("/api/plans/" + id, { method: "DELETE" });
+        await loadPlans();
+        toast("Deleted");
+      }
+    } catch (err) { toast(err.message, true); }
+  });
+
+  // --- tokens ---
+  async function loadTokens() {
+    const { tokens } = await api("/api/tokens");
+    $("tokens-table").hidden = tokens.length === 0;
+    $("tokens-empty").hidden = tokens.length !== 0;
+    $("tokens-body").innerHTML = tokens.map((t) => `
+      <tr data-id="${esc(t.id)}" data-name="${esc(t.name)}">
+        <td>${esc(t.name)}</td>
+        <td class="dim mono">${esc(t.prefix)}…</td>
+        <td class="dim hide-sm">${fmtDate(t.created_at)}</td>
+        <td class="dim hide-sm">${fmtDate(t.last_used_at)}</td>
+        <td><div class="row-actions"><button class="small" data-act="revoke">Revoke</button></div></td>
+      </tr>`).join("");
+  }
+  $("token-create").addEventListener("click", async () => {
+    try {
+      const name = $("token-name").value.trim() || "unnamed";
+      const { token } = await api("/api/tokens", { method: "POST", body: { name } });
+      $("token-name").value = "";
+      $("secret-reveal").hidden = false;
+      $("secret-value").textContent = token.secret;
+      await loadTokens();
+    } catch (err) { toast(err.message, true); }
+  });
+  $("secret-copy").addEventListener("click", () => copyText($("secret-value").textContent));
+  $("tokens-body").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act='revoke']");
+    if (!btn) return;
+    const tr = btn.closest("tr");
+    if (!confirm(`Revoke token "${tr.dataset.name}"?\n\nAnything using it will stop working immediately.`)) return;
+    try {
+      await api("/api/tokens/" + tr.dataset.id, { method: "DELETE" });
+      await loadTokens();
+      toast("Revoked");
+    } catch (err) { toast(err.message, true); }
+  });
+
+  // --- setup mode: auto-mint a token and show it on a clean page ---
+  async function runSetupMode() {
+    const name = new URLSearchParams(location.search).get("name")
+      || sessionStorage.getItem("setup_name") || "cli";
+    sessionStorage.removeItem("setup_name");
+    const { token } = await api("/api/tokens", { method: "POST", body: { name } });
+    history.replaceState({}, "", "/setup");
+    $("setup-token-name").textContent = `Created for “${name}” — ready to copy.`;
+    $("setup-secret").textContent = token.secret;
+    show("view-setup");
+    sessionStorage.removeItem("setup_auth_tried");
+  }
+  $("setup-copy").addEventListener("click", () => copyText($("setup-secret").textContent));
+
+  // --- misc wiring ---
+  $("signin-btn").addEventListener("click", () => {
+    const name = new URLSearchParams(location.search).get("name");
+    if (name) sessionStorage.setItem("setup_name", name);
+    signIn();
+  });
+  $("signout-btn").addEventListener("click", async () => {
+    await fetch("/api/session", { method: "DELETE" });
+    location.reload();
+  });
+
+  async function boot() {
+    try {
+      await handleCallback();
+    } catch (err) {
+      toast("Sign-in failed: " + err.message, true);
+    }
+    try {
+      const { user } = await api("/api/me");
+      if (MODE === "setup") { await runSetupMode(); return; }
+      $("user-name").textContent = user.name || user.email || user.id.slice(0, 12);
+      if (user.picture) { $("user-pic").src = user.picture; $("user-pic").hidden = false; }
+      show("view-app");
+      await Promise.all([loadPlans(), loadTokens()]);
+    } catch (err) {
+      if (!err.unauthorized) { toast(err.message, true); show("view-signin"); return; }
+      // Setup mode: jump straight into sign-in once, so the user lands on
+      // the token page with as few clicks as possible.
+      if (MODE === "setup" && !sessionStorage.getItem("setup_auth_tried")) {
+        sessionStorage.setItem("setup_auth_tried", "1");
+        const name = new URLSearchParams(location.search).get("name");
+        if (name) sessionStorage.setItem("setup_name", name);
+        await signIn();
+        return;
+      }
+      if (MODE === "setup") $("signin-sub").textContent = "Sign in to create your API token.";
+      show("view-signin");
+    }
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

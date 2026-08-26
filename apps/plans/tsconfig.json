@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2023", "WebWorker"],
+    "module": "ESNext",
+    "target": "ES2022",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["bun", "@cloudflare/workers-types"]
+  },
+  "include": ["worker.ts", "src/**/*.ts", "test/**/*.ts"]
+}

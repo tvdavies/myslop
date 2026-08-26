@@ -1,0 +1,5 @@
+# bun test imports .html/.md as text, matching the wrangler Text rules and the
+# platform artifact build (Bun.build loader { ".html": "text", ".md": "text" }).
+[loader]
+".html" = "text"
+".md" = "text"

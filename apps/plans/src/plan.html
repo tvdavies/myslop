@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>plans.myslop.app</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23374151'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' font-family='sans-serif' fill='%23fff'%3Ep%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f8f9fa;
+    --panel: #ffffff;
+    --border: #e2e5e9;
+    --text: #1f2328;
+    --dim: #6b7280;
+    --accent: #2563eb;
+    --danger: #dc2626;
+    --ok: #15803d;
+    --warn: #b45309;
+    --code-bg: #f3f4f6;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 15px; line-height: 1.6; min-height: 100vh;
+  }
+  code, pre, .mono { font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 24px 100px; }
+  header.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; font-size: 14px; }
+  .logo { font-weight: 600; }
+  .logo a { color: var(--text); text-decoration: none; }
+  .logo .muted { color: var(--dim); font-weight: 400; }
+  .userbox { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; }
+  .userbox img { width: 26px; height: 26px; border-radius: 50%; }
+  button {
+    font: inherit; font-size: 13.5px; cursor: pointer; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); border-radius: 6px; padding: 6px 12px;
+  }
+  button:hover { background: #f3f4f6; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover { background: #1d4ed8; }
+  button.approve { color: var(--ok); border-color: #bbe3c8; }
+  button.approve:hover { background: #f0fdf4; }
+  button.reqchanges { color: var(--warn); border-color: #f5d9a8; }
+  button.reqchanges:hover { background: #fef8ec; }
+  button.small { padding: 2px 9px; font-size: 12.5px; }
+  button.linkish { border: none; background: none; color: var(--dim); padding: 2px 6px; font-size: 12.5px; }
+  button.linkish:hover { color: var(--accent); background: none; }
+  select {
+    font: inherit; font-size: 13.5px; background: var(--panel); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 5px 8px;
+  }
+  textarea {
+    font: inherit; font-size: 14px; width: 100%; min-height: 70px; resize: vertical;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .hero { max-width: 420px; margin: 90px auto; text-align: center; }
+  .hero h1 { font-size: 22px; margin-bottom: 10px; font-weight: 600; }
+  .hero p { color: var(--dim); margin-bottom: 26px; }
+
+  .plan-head { border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 8px; }
+  .plan-head h1 { font-size: 24px; font-weight: 650; line-height: 1.3; margin-bottom: 6px; }
+  .meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--dim); font-size: 13px; }
+  .status {
+    font-size: 12px; padding: 2px 10px; border-radius: 99px;
+    border: 1px solid var(--border); background: var(--panel); white-space: nowrap;
+  }
+  .status.approved { color: var(--ok); border-color: #bbe3c8; background: #f0fdf4; }
+  .status.changes_requested { color: var(--warn); border-color: #f5d9a8; background: #fef8ec; }
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .controls .spacer { flex: 1; }
+  .review-strip { margin-top: 8px; color: var(--dim); font-size: 13px; }
+  .review-strip .v-approved { color: var(--ok); }
+  .review-strip .v-changes { color: var(--warn); }
+  .banner {
+    margin: 14px 0 0; padding: 9px 14px; border: 1px solid #f5d9a8; background: #fef8ec;
+    border-radius: 7px; font-size: 13.5px; color: var(--warn);
+  }
+  .banner button { margin-left: 8px; }
+
+  /* --- document --- */
+  article { padding: 10px 0 0 34px; }
+  article h1, article h2, article h3, article h4, article h5, article h6 { line-height: 1.3; margin: 22px 0 8px; }
+  article h1 { font-size: 22px; } article h2 { font-size: 19px; } article h3 { font-size: 16.5px; }
+  article h4, article h5, article h6 { font-size: 15px; }
+  article p { margin: 10px 0; }
+  article ul, article ol { margin: 10px 0; padding-left: 24px; }
+  article li { margin: 4px 0; }
+  article li > ul, article li > ol { margin: 4px 0; }
+  article pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 7px;
+    padding: 12px 14px; margin: 12px 0; overflow-x: auto; font-size: 13px; line-height: 1.5;
+  }
+  article code { background: var(--code-bg); border-radius: 4px; padding: 1px 5px; font-size: 0.9em; }
+  article pre code { background: none; padding: 0; font-size: inherit; }
+  article blockquote { border-left: 3px solid var(--border); color: var(--dim); padding: 2px 14px; margin: 12px 0; }
+  article table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  article th, article td { border: 1px solid var(--border); padding: 6px 12px; text-align: left; }
+  article th { background: var(--code-bg); }
+  article img { max-width: 100%; border: 1px solid var(--border); border-radius: 7px; }
+  article hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+
+  [data-block-id] { position: relative; }
+  .addbtn {
+    position: absolute; left: -32px; top: 1px; width: 24px; height: 24px;
+    display: none; align-items: center; justify-content: center;
+    font-size: 15px; color: var(--dim); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; cursor: pointer; padding: 0;
+    line-height: 1; z-index: 2;
+  }
+  [data-block-id]:hover > .addbtn { display: inline-flex; }
+  .addbtn:hover { color: var(--accent); border-color: var(--accent); background: #eff4fe; }
+
+  /* --- comments --- */
+  .threads { margin: 6px 0 10px; }
+  li .threads { margin: 6px 0 2px; }
+  .thread {
+    background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 7px; padding: 10px 14px; margin: 8px 0; font-size: 13.5px;
+  }
+  .thread.resolved { border-left-color: var(--border); opacity: 0.62; }
+  .c { margin-bottom: 8px; }
+  .c:last-of-type { margin-bottom: 4px; }
+  .c.reply { margin-left: 18px; padding-left: 12px; border-left: 2px solid var(--border); }
+  .c-head { display: flex; align-items: center; gap: 8px; margin-bottom: 1px; }
+  .c-author { font-weight: 600; font-size: 13px; }
+  .c-author img { width: 18px; height: 18px; border-radius: 50%; vertical-align: -4px; margin-right: 4px; }
+  .agent-badge {
+    font-size: 11px; font-weight: 600; color: #6d28d9; background: #f3effe;
+    border: 1px solid #ddd3f8; border-radius: 99px; padding: 0 8px;
+  }
+  .c-date { color: var(--dim); font-size: 12px; }
+  .c-ver { color: var(--warn); font-size: 12px; }
+  .c-body { white-space: pre-wrap; overflow-wrap: break-word; }
+  .t-actions { display: flex; gap: 4px; margin-top: 4px; }
+  .composer { margin: 8px 0; }
+  .composer .c-actions { display: flex; gap: 8px; margin-top: 6px; justify-content: flex-end; }
+
+  section.general { margin-top: 34px; padding-left: 34px; }
+  section.general h2 {
+    font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--dim); margin-bottom: 10px;
+  }
+
+  /* --- diff view --- */
+  #diffdoc { padding: 10px 0 0 34px; }
+  .dpart { border-left: 3px solid transparent; padding: 0 10px; margin: 2px 0; border-radius: 4px; }
+  .dpart.added { border-left-color: var(--ok); background: #f0fdf4; }
+  .dpart.removed { border-left-color: var(--danger); background: #fef2f2; opacity: 0.75; }
+  .dpart.changed { border-left-color: var(--warn); background: #fffbeb; }
+  .dpart .wdiff { white-space: pre-wrap; font-size: 14px; padding: 8px 2px; overflow-wrap: break-word; }
+  .wdiff del { background: #fecaca; color: #7f1d1d; text-decoration: line-through; border-radius: 3px; padding: 0 2px; }
+  .wdiff ins { background: #bbf7d0; color: #14532d; text-decoration: none; border-radius: 3px; padding: 0 2px; }
+  ul.dli { margin: 6px 0; padding-left: 24px; }
+
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #1f2328; color: #fff; border-radius: 8px;
+    padding: 9px 18px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 10; font-size: 13px;
+  }
+  #toast.show { opacity: 1; }
+  #toast.error { background: var(--danger); }
+  @media (max-width: 720px) { article, section.general, #diffdoc { padding-left: 20px; } .addbtn { left: -26px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="logo"><a href="/dashboard">plans<span class="muted">.myslop.app</span></a></div>
+    <div class="userbox" id="userbox" hidden>
+      <img id="user-pic" alt="" hidden>
+      <span id="user-name"></span>
+    </div>
+  </header>
+
+  <div id="view-loading" class="hero"><p>Loading…</p></div>
+
+  <div id="view-signin" class="hero" hidden>
+    <h1>Review this plan</h1>
+    <p>Sign in to read the plan, leave comments, and approve or request changes.</p>
+    <button class="primary" id="signin-btn">Sign in with shoo.dev</button>
+  </div>
+
+  <div id="view-missing" class="hero" hidden>
+    <h1>Plan not found</h1>
+    <p>This plan doesn't exist or was deleted by its owner.</p>
+  </div>
+
+  <div id="view-plan" hidden>
+    <div class="plan-head">
+      <h1 id="plan-title"></h1>
+      <div class="meta">
+        <span class="status" id="plan-status"></span>
+        <span id="plan-owner"></span>
+        <span id="plan-updated"></span>
+      </div>
+      <div class="controls">
+        <select id="version-select" title="View a version"></select>
+        <button id="compare-btn">Compare…</button>
+        <span id="compare-controls" hidden>
+          <select id="diff-from"></select>
+          →
+          <select id="diff-to"></select>
+          <button class="small" id="compare-close">Close</button>
+        </span>
+        <span class="spacer"></span>
+        <button class="approve" id="approve-btn">Approve</button>
+        <button class="reqchanges" id="changes-btn">Request changes</button>
+      </div>
+      <div class="review-strip" id="review-strip"></div>
+    </div>
+
+    <div class="banner" id="old-banner" hidden></div>
+
+    <article id="doc"></article>
+    <div id="diffdoc" hidden></div>
+
+    <section class="general" id="general-section">
+      <h2>Comments</h2>
+      <div id="general-threads"></div>
+      <div class="composer">
+        <textarea id="general-input" placeholder="Leave a comment on this plan…"></textarea>
+        <div class="c-actions"><button class="primary" id="general-send">Comment</button></div>
+      </div>
+    </section>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+(() => {
+  const SHOO = "https://shoo.dev";
+  const ORIGIN = location.origin;
+  const PLAN_ID = location.pathname.split("/")[2];
+  const REDIRECT_URI = ORIGIN + location.pathname;
+  const $ = (id) => document.getElementById(id);
+
+  let state = null; // last /api/plans/:id payload
+  let me = null;
+
+  // --- helpers ---
+  const toastEl = $("toast");
+  let toastTimer;
+  function toast(msg, isError) {
+    toastEl.textContent = msg;
+    toastEl.className = "show" + (isError ? " error" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toastEl.className = ""), 3000);
+  }
+  function show(view) {
+    for (const v of ["view-loading", "view-signin", "view-missing", "view-plan"]) $(v).hidden = v !== view;
+    $("userbox").hidden = view !== "view-plan";
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function fmtDate(ts) {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    return d.toISOString().slice(0, 10) + " " + d.toTimeString().slice(0, 5);
+  }
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      headers: opts.body ? { "content-type": "application/json" } : {},
+      ...opts,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    if (res.status === 401) { const e = new Error("unauthorized"); e.unauthorized = true; throw e; }
+    if (res.status === 404) { const e = new Error("not found"); e.missing = true; throw e; }
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    return res.json();
+  }
+
+  // --- shoo PKCE (redirects back to this plan URL) ---
+  function randStr(len) {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    const rand = crypto.getRandomValues(new Uint8Array(len));
+    let out = "";
+    for (const b of rand) out += chars[b % chars.length];
+    return out;
+  }
+  function b64url(bytes) {
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+  async function signIn() {
+    const verifier = randStr(64);
+    const stateStr = randStr(32);
+    sessionStorage.setItem("shoo_pkce", JSON.stringify({ verifier, state: stateStr, t: Date.now() }));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+    const u = new URL("/authorize", SHOO);
+    u.searchParams.set("client_id", "origin:" + ORIGIN);
+    u.searchParams.set("redirect_uri", REDIRECT_URI);
+    u.searchParams.set("state", stateStr);
+    u.searchParams.set("code_challenge", b64url(new Uint8Array(digest)));
+    u.searchParams.set("code_challenge_method", "S256");
+    u.searchParams.set("pii", "true");
+    location.assign(u);
+  }
+  async function handleCallback() {
+    const params = new URLSearchParams(location.search);
+    const code = params.get("code");
+    const stateStr = params.get("state");
+    if (!code || !stateStr) return false;
+    params.delete("code");
+    params.delete("state");
+    const qs = params.toString();
+    history.replaceState({}, "", location.pathname + (qs ? "?" + qs : ""));
+    let pkce = null;
+    try { pkce = JSON.parse(sessionStorage.getItem("shoo_pkce")); } catch {}
+    sessionStorage.removeItem("shoo_pkce");
+    if (!pkce || pkce.state !== stateStr || Date.now() - pkce.t > 10 * 60 * 1000) {
+      toast("Sign-in expired, try again", true);
+      return false;
+    }
+    const res = await fetch(new URL("/token", SHOO), {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: "origin:" + ORIGIN,
+        redirect_uri: REDIRECT_URI,
+        code,
+        code_verifier: pkce.verifier,
+      }),
+    });
+    if (!res.ok) { toast("Token exchange failed", true); return false; }
+    const tok = await res.json();
+    const sess = await fetch("/api/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id_token: tok.id_token }),
+    });
+    if (!sess.ok) { toast("Session creation failed", true); return false; }
+    return true;
+  }
+
+  // --- rendering ---
+  const STATUS_LABEL = { open: "Open", approved: "Approved", changes_requested: "Changes requested" };
+
+  function viewedVersion() {
+    return Number(new URLSearchParams(location.search).get("v")) || 0;
+  }
+
+  function commentHtml(c) {
+    const author = c.author.type === "agent"
+      ? `<span class="c-author">${esc(c.author.name.replace(/^Agent · /, ""))}</span><span class="agent-badge">agent</span>`
+      : `<span class="c-author">${c.author.picture ? `<img src="${esc(c.author.picture)}" alt="">` : ""}${esc(c.author.name)}</span>`;
+    return `<div class="c${c.parent_id ? " reply" : ""}" data-cid="${esc(c.id)}">
+      <div class="c-head">${author}<span class="c-date">${fmtDate(c.created_at)}</span></div>
+      <div class="c-body">${esc(c.body)}</div>
+    </div>`;
+  }
+
+  function threadHtml(root, replies) {
+    const onOld = root.version !== state.plan.version
+      ? `<span class="c-ver">on v${root.version}${root.block_id && !root.display_block_id ? " (block removed)" : ""}</span>` : "";
+    const del = root.mine || state.plan.is_owner
+      ? `<button class="linkish" data-act="delete" data-cid="${esc(root.id)}">Delete</button>` : "";
+    return `<div class="thread${root.resolved ? " resolved" : ""}" data-cid="${esc(root.id)}">
+      ${onOld ? `<div class="c-head" style="margin-bottom:4px">${onOld}</div>` : ""}
+      ${commentHtml(root)}
+      ${replies.map(commentHtml).join("")}
+      <div class="t-actions">
+        <button class="linkish" data-act="reply" data-cid="${esc(root.id)}">Reply</button>
+        <button class="linkish" data-act="resolve" data-cid="${esc(root.id)}" data-resolved="${root.resolved ? 1 : 0}">${root.resolved ? "Unresolve" : "Resolve"}</button>
+        ${del}
+      </div>
+      <div class="composer" data-reply-composer hidden>
+        <textarea placeholder="Reply…"></textarea>
+        <div class="c-actions"><button class="small" data-act="reply-cancel">Cancel</button><button class="primary small" data-act="reply-send" data-cid="${esc(root.id)}">Reply</button></div>
+      </div>
+    </div>`;
+  }
+
+  function composerHtml(blockId) {
+    return `<div class="composer" data-block-composer="${esc(blockId)}">
+      <textarea placeholder="Comment on this block…"></textarea>
+      <div class="c-actions"><button class="small" data-act="block-cancel">Cancel</button><button class="primary small" data-act="block-send" data-block="${esc(blockId)}">Comment</button></div>
+    </div>`;
+  }
+
+  function threadsContainerFor(el) {
+    let container = el.tagName === "LI" ? el.querySelector(":scope > .threads") : (el.nextElementSibling?.classList?.contains("threads") ? el.nextElementSibling : null);
+    if (!container) {
+      container = document.createElement("div");
+      container.className = "threads";
+      if (el.tagName === "LI") el.appendChild(container);
+      else el.insertAdjacentElement("afterend", container);
+    }
+    return container;
+  }
+
+  function renderPlanView() {
+    const p = state.plan;
+    document.title = p.title + " · plans.myslop.app";
+    $("plan-title").textContent = p.title;
+    const st = $("plan-status");
+    st.textContent = STATUS_LABEL[p.status] || p.status;
+    st.className = "status " + p.status;
+    $("plan-owner").textContent = "by " + p.owner;
+    $("plan-updated").textContent = "updated " + fmtDate(p.updated_at);
+
+    // Version picker
+    const sel = $("version-select");
+    sel.innerHTML = state.versions.map((v) =>
+      `<option value="${v.version}" ${v.version === p.version ? "selected" : ""} title="${esc(v.note || "")}">v${v.version} · ${fmtDate(v.created_at).slice(0, 10)}${v.version === p.current_version ? " (current)" : ""}</option>`,
+    ).join("");
+
+    // Review strip: verdicts on the current version
+    const current = state.reviews.filter((r) => r.version === p.current_version);
+    $("review-strip").innerHTML = current.length
+      ? "Reviews on v" + p.current_version + ": " + current.map((r) =>
+          `<span class="${r.verdict === "approved" ? "v-approved" : "v-changes"}">${esc(r.by)} ${r.verdict === "approved" ? "✓ approved" : "✗ requested changes"}${r.note ? ` — “${esc(r.note)}”` : ""}</span>`,
+        ).join(" · ")
+      : "No reviews yet on v" + p.current_version + ".";
+
+    // Old-version banner + review buttons only for the current version
+    const old = p.version !== p.current_version;
+    $("old-banner").hidden = !old;
+    if (old) {
+      $("old-banner").innerHTML = `Viewing v${p.version} — the current version is v${p.current_version}. <button class="small" id="goto-current">View current</button>`;
+      $("goto-current").addEventListener("click", () => { location.search = ""; });
+    }
+    $("approve-btn").disabled = old;
+    $("changes-btn").disabled = old;
+    const mine = state.my_review;
+    $("approve-btn").textContent = mine?.verdict === "approved" ? "Approved ✓" : "Approve";
+    $("changes-btn").textContent = mine?.verdict === "changes_requested" ? "Changes requested ✗" : "Request changes";
+
+    // Document
+    const doc = $("doc");
+    doc.innerHTML = state.html;
+    for (const el of doc.querySelectorAll("[data-block-id]")) {
+      if (el.tagName === "HR") continue;
+      const btn = document.createElement("button");
+      btn.className = "addbtn";
+      btn.title = "Comment on this block";
+      btn.textContent = "+";
+      btn.dataset.addComment = el.dataset.blockId;
+      el.appendChild(btn);
+    }
+
+    // Comments: group into threads, attach to blocks or the general section
+    const roots = state.comments.filter((c) => !c.parent_id);
+    const replies = (id) => state.comments.filter((c) => c.parent_id === id);
+    $("general-threads").innerHTML = "";
+    for (const root of roots) {
+      const html = threadHtml(root, replies(root.id));
+      const target = root.display_block_id
+        ? doc.querySelector(`[data-block-id="${CSS.escape(root.display_block_id)}"]`)
+        : null;
+      if (target) threadsContainerFor(target).insertAdjacentHTML("beforeend", html);
+      else $("general-threads").insertAdjacentHTML("beforeend", html);
+    }
+
+    $("diffdoc").hidden = true;
+    doc.hidden = false;
+    $("general-section").hidden = false;
+    show("view-plan");
+  }
+
+  async function reload() {
+    const v = viewedVersion();
+    state = await api(`/api/plans/${PLAN_ID}${v ? `?version=${v}` : ""}`);
+    renderPlanView();
+  }
+
+  // --- interactions (event delegation on the whole plan view) ---
+  $("view-plan").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+
+    try {
+      if (btn.dataset.addComment) {
+        const blockId = btn.dataset.addComment;
+        const el = document.querySelector(`#doc [data-block-id="${CSS.escape(blockId)}"]`);
+        const container = threadsContainerFor(el);
+        if (!container.querySelector("[data-block-composer]")) {
+          container.insertAdjacentHTML("beforeend", composerHtml(blockId));
+          container.querySelector("[data-block-composer] textarea").focus();
+        }
+        return;
+      }
+      const act = btn.dataset.act;
+      if (!act) return;
+
+      if (act === "block-cancel") { btn.closest(".composer").remove(); return; }
+      if (act === "block-send") {
+        const composer = btn.closest(".composer");
+        const body = composer.querySelector("textarea").value.trim();
+        if (!body) return;
+        await api(`/api/plans/${PLAN_ID}/comments`, {
+          method: "POST",
+          body: { body, block_id: btn.dataset.block, version: state.plan.version },
+        });
+        await reload();
+        toast("Comment added");
+        return;
+      }
+      if (act === "reply") {
+        const composer = btn.closest(".thread").querySelector("[data-reply-composer]");
+        composer.hidden = !composer.hidden;
+        if (!composer.hidden) composer.querySelector("textarea").focus();
+        return;
+      }
+      if (act === "reply-cancel") { btn.closest("[data-reply-composer]").hidden = true; return; }
+      if (act === "reply-send") {
+        const composer = btn.closest("[data-reply-composer]");
+        const body = composer.querySelector("textarea").value.trim();
+        if (!body) return;
+        await api(`/api/plans/${PLAN_ID}/comments`, {
+          method: "POST",
+          body: { body, parent_id: btn.dataset.cid },
+        });
+        await reload();
+        toast("Reply added");
+        return;
+      }
+      if (act === "resolve") {
+        await api(`/api/plans/${PLAN_ID}/comments/${btn.dataset.cid}/resolve`, {
+          method: "POST",
+          body: { resolved: btn.dataset.resolved !== "1" },
+        });
+        await reload();
+        return;
+      }
+      if (act === "delete") {
+        if (!confirm("Delete this comment thread?")) return;
+        await api(`/api/plans/${PLAN_ID}/comments/${btn.dataset.cid}`, { method: "DELETE" });
+        await reload();
+        toast("Deleted");
+        return;
+      }
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  $("general-send").addEventListener("click", async () => {
+    const body = $("general-input").value.trim();
+    if (!body) return;
+    try {
+      await api(`/api/plans/${PLAN_ID}/comments`, {
+        method: "POST",
+        body: { body, version: state.plan.version },
+      });
+      $("general-input").value = "";
+      await reload();
+      toast("Comment added");
+    } catch (err) { toast(err.message, true); }
+  });
+
+  async function review(verdict) {
+    const note = prompt(verdict === "approved" ? "Optional note (Enter to skip):" : "What should change? (optional)");
+    if (note === null) return;
+    try {
+      await api(`/api/plans/${PLAN_ID}/review`, {
+        method: "POST",
+        body: { verdict, note: note.trim() || undefined, version: state.plan.current_version },
+      });
+      await reload();
+      toast(verdict === "approved" ? "Approved" : "Changes requested");
+    } catch (err) { toast(err.message, true); }
+  }
+  $("approve-btn").addEventListener("click", () => review("approved"));
+  $("changes-btn").addEventListener("click", () => review("changes_requested"));
+
+  $("version-select").addEventListener("change", (e) => {
+    const v = Number(e.target.value);
+    location.search = v === state.plan.current_version ? "" : `?v=${v}`;
+  });
+
+  // --- diff mode ---
+  function fillDiffSelects() {
+    const options = state.versions.map((v) => `<option value="${v.version}">v${v.version}</option>`).join("");
+    $("diff-from").innerHTML = options;
+    $("diff-to").innerHTML = options;
+    $("diff-from").value = String(Math.max(1, state.plan.current_version - 1));
+    $("diff-to").value = String(state.plan.current_version);
+  }
+  async function showDiff() {
+    const from = $("diff-from").value;
+    const to = $("diff-to").value;
+    try {
+      const { parts } = await api(`/api/plans/${PLAN_ID}/diff?from=${from}&to=${to}`);
+      $("diffdoc").innerHTML = parts.map((part) => `<div class="dpart ${part.type}">${part.html}</div>`).join("");
+      $("doc").hidden = true;
+      $("general-section").hidden = true;
+      $("diffdoc").hidden = false;
+    } catch (err) { toast(err.message, true); }
+  }
+  $("compare-btn").addEventListener("click", () => {
+    if (state.versions.length < 2) { toast("Only one version so far"); return; }
+    fillDiffSelects();
+    $("compare-btn").hidden = true;
+    $("compare-controls").hidden = false;
+    showDiff();
+  });
+  $("compare-close").addEventListener("click", () => {
+    $("compare-controls").hidden = true;
+    $("compare-btn").hidden = false;
+    $("diffdoc").hidden = true;
+    $("doc").hidden = false;
+    $("general-section").hidden = false;
+  });
+  $("diff-from").addEventListener("change", showDiff);
+  $("diff-to").addEventListener("change", showDiff);
+
+  // --- boot ---
+  $("signin-btn").addEventListener("click", signIn);
+
+  async function boot() {
+    if (!/^[a-f0-9]{10}$/.test(PLAN_ID || "")) { show("view-missing"); return; }
+    try {
+      await handleCallback();
+    } catch (err) {
+      toast("Sign-in failed: " + err.message, true);
+    }
+    try {
+      me = (await api("/api/me")).user;
+      $("user-name").textContent = me.name || me.email || me.id.slice(0, 12);
+      if (me.picture) { $("user-pic").src = me.picture; $("user-pic").hidden = false; }
+      await reload();
+    } catch (err) {
+      if (err.unauthorized) { show("view-signin"); return; }
+      if (err.missing) { show("view-missing"); return; }
+      toast(err.message, true);
+      show("view-missing");
+    }
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

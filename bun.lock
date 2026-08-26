@@ -26,6 +26,9 @@
         "typescript": "^5",
       },
     },
+    "apps/plans": {
+      "name": "myslop-plans",
+    },
     "platform": {
       "name": "myslop-apps",
       "version": "0.1.0",
@@ -754,6 +757,8 @@
     "myslop-files": ["myslop-files@workspace:apps/files"],
 
     "myslop-mail": ["myslop-mail@workspace:apps/mail"],
+
+    "myslop-plans": ["myslop-plans@workspace:apps/plans"],
 
     "nanoid": ["nanoid@3.3.18", "", { "bin": { "nanoid": "bin/nanoid.cjs" } }, "sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w=="],
 

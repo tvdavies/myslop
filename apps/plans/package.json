@@ -1,0 +1,11 @@
+{
+  "name": "myslop-plans",
+  "private": true,
+  "scripts": {
+    "gen": "bun scripts/gen-setup.ts",
+    "dev": "bun scripts/gen-setup.ts && bunx wrangler dev",
+    "deploy": "bun scripts/gen-setup.ts && bunx wrangler deploy",
+    "test": "bun scripts/gen-setup.ts && bun test",
+    "typecheck": "bun scripts/gen-setup.ts && bunx tsc --noEmit"
+  }
+}

@@ -12,9 +12,9 @@
     "apps/*"
   ],
   "scripts": {
-    "generate": "bun run --cwd platform generate && bun run --cwd apps/files gen && bun run --cwd apps/mail gen",
-    "test": "bun run --cwd platform test && bun run --cwd apps/files test && bun run --cwd apps/mail test && bun test scripts",
-    "typecheck": "bun run --cwd platform typecheck && bun run --cwd apps/files typecheck && bun run --cwd apps/mail typecheck && bunx tsc --noEmit",
+    "generate": "bun run --cwd platform generate && bun run --cwd apps/files gen && bun run --cwd apps/mail gen && bun run --cwd apps/plans gen",
+    "test": "bun run --cwd platform test && bun run --cwd apps/files test && bun run --cwd apps/mail test && bun run --cwd apps/plans test && bun test scripts",
+    "typecheck": "bun run --cwd platform typecheck && bun run --cwd apps/files typecheck && bun run --cwd apps/mail typecheck && bun run --cwd apps/plans typecheck && bunx tsc --noEmit",
     "test:browser": "bun run --cwd platform test:browser",
     "check": "bun run generate && bun run test && bun run typecheck",
     "sync-apps": "bun scripts/sync-apps.ts"
