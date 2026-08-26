@@ -1,0 +1,15 @@
+{
+  "$schema": "https://myslop.cloud/schema/v1.json",
+  "version": 1,
+  "app": {
+    "name": "Plans",
+    "description": "Agent-authored plans with human review: block comments, approvals, versions, and diffs.",
+    "visibility": "public"
+  },
+  "capabilities": {
+    "database": true,
+    "network": [
+      "shoo.dev"
+    ]
+  }
+}

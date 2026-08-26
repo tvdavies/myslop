@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "myslop-plans",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "myslop-plans",
+      // Placeholder until the platform provisions the production database
+      // (capabilities.database in myslop.json). Local dev only needs the
+      // binding name; replace with the real id for any standalone deploy.
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "rules": [
+    {
+      "type": "Text",
+      "globs": [
+        "**/*.html",
+        "**/*.md"
+      ],
+      "fallthrough": false
+    }
+  ]
+}

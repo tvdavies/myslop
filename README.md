@@ -7,6 +7,7 @@ Myslop is an agent-native microcloud built on Cloudflare Workers for Platforms. 
 - `platform/` — the control plane, dispatcher, CLI, schema, and deployment tooling served at `myslop.cloud`, with apps on `<slug>.myslop.app`.
 - `apps/files/` — Files, including its dashboard, `msf_` token API, upload/download service, setup script, and skill.
 - `apps/mail/` — Mail, including its dashboard, `msm_` token API, Email Routing ingestion, inbox storage, long-polling, SSE, setup script, and skill.
+- `apps/plans/` — Plans, agent-authored plans reviewed by humans: block-level comments, approvals, versions and diffs, its dashboard, `msp_` token API, setup script, and skill.
 - `scripts/sync-apps.ts` — reconciles the declarative app directories with the platform.
 
 The three source repositories were grafted without squashing, so their original histories remain in this repository.

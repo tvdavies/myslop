@@ -21,6 +21,7 @@ on:
           - all
           - files
           - mail
+          - plans
       apply_domains:
         description: Reconcile public domain aliases (cutover operation)
         required: true
@@ -239,7 +240,7 @@ jobs:
             done
             return 1
           }
-          for app in files mail; do
+          for app in files mail plans; do
             if [ "$SELECTED_APP" != "all" ] && [ "$SELECTED_APP" != "$app" ]; then
               continue
             fi
