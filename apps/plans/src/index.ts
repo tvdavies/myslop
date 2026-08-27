@@ -451,7 +451,7 @@ async function markdownWithFrontmatter(
       );
     }
   }
-  lines.push("---", "");
+  lines.push("---", "", "");
   return lines.join("\n") + markdown + (markdown.endsWith("\n") ? "" : "\n");
 }
 
