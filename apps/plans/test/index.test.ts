@@ -381,7 +381,8 @@ describe("viewer API and pages", () => {
     // Default mode prefixes YAML frontmatter, then the full plan.
     const bare = await (await call("GET", `/p/${created.id}/md`)).text();
     expect(bare.startsWith("---\n")).toBe(true);
-    expect(bare).toContain(PLAN_MD);
+    // Blank line separates the closing --- from the document.
+    expect(bare).toContain(`\n---\n\n${PLAN_MD}`);
     expect(bare).toContain(`id: ${created.id}`);
     expect(bare).toContain("status: open");
     expect(bare).toContain("open_comment_threads: 0");
