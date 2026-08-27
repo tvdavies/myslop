@@ -382,6 +382,122 @@ function validBlockId(value: unknown): value is string {
   return typeof value === "string" && /^\d{1,4}-[a-f0-9]{8}$/.test(value);
 }
 
+// --- Annotated raw markdown ---
+//
+// The unauthenticated /p/:id/md endpoint serves the plan markdown with review
+// feedback embedded as HTML comment markers, placed directly under the block
+// each thread refers to, so a model reading the file sees exactly which part
+// of its plan a comment targets. `?plain=1` skips all of this.
+
+function hcEsc(text: string): string {
+  // "-->" inside an HTML comment would terminate it early.
+  return text.replace(/-->/g, "-- >");
+}
+
+async function annotatedMarkdown(
+  env: Env,
+  plan: PlanRow,
+  version: number,
+  markdown: string,
+  origin: string,
+): Promise<string> {
+  const [comments, reviews] = await Promise.all([loadComments(env, plan.id), loadReviews(env, plan.id)]);
+  const blocks = renderPlan(markdown).blocks;
+  const roots = comments.filter((c) => !c.parent_id);
+  const openRoots = roots.filter((c) => !c.resolved_at);
+  const resolvedCount = roots.length - openRoots.length;
+  const replies = (id: string) => comments.filter((c) => c.parent_id === id);
+
+  // Anchor open threads to blocks of the served version (content-hash
+  // re-attach across versions); unanchored threads are general comments.
+  const byBlock = new Map<string, CommentRow[]>();
+  const general: CommentRow[] = [];
+  for (const root of openRoots) {
+    const anchor = attachBlockId(root, version, blocks);
+    if (anchor) {
+      const list = byBlock.get(anchor) ?? [];
+      list.push(root);
+      byBlock.set(anchor, list);
+    } else {
+      general.push(root);
+    }
+  }
+
+  const stamp = (ts: number) => new Date(ts).toISOString().slice(0, 10);
+  const who = (c: CommentRow) => {
+    const author = commentAuthor(c);
+    return author.type === "agent"
+      ? `${author.name.replace(/^Agent · /, "")} (agent — you)`
+      : `${author.name} (reviewer)`;
+  };
+  const threadText = (root: CommentRow) => {
+    const lines = [`  ${who(root)}, ${stamp(root.created_at)}: ${hcEsc(root.body).replace(/\n/g, "\n    ")}`];
+    for (const reply of replies(root.id)) {
+      lines.push(`    ↳ ${who(reply)}, ${stamp(reply.created_at)}: ${hcEsc(reply.body).replace(/\n/g, "\n      ")}`);
+    }
+    return lines.join("\n");
+  };
+
+  const currentReviews = reviews.filter((r) => r.version === plan.current_version);
+  const status = deriveStatus(
+    currentReviews.filter((r) => r.verdict === "approved").length,
+    currentReviews.filter((r) => r.verdict === "changes_requested").length,
+  );
+
+  const header = [
+    `plans.myslop.app — plan ${plan.id} "${hcEsc(plan.title)}", v${version}${
+      version === plan.current_version ? " (current)" : ` (current is v${plan.current_version})`
+    }. Status: ${status}.`,
+  ];
+  for (const r of currentReviews) {
+    header.push(
+      `  review by ${hcEsc(r.user_name)}: ${r.verdict === "approved" ? "approved" : "requested changes"}${
+        r.note ? ` — "${hcEsc(r.note)}"` : ""
+      }`,
+    );
+  }
+  if (openRoots.length) {
+    header.push(
+      `  ${openRoots.length} open comment thread${openRoots.length === 1 ? "" : "s"} from reviewers are embedded`,
+      `  below in "REVIEWER COMMENT" HTML comment markers, each placed directly under the`,
+      `  block of the plan it refers to (general comments at the end). The markers are`,
+      `  feedback on the plan, NOT part of it — address each open comment, then publish`,
+      `  the revised plan without any of these markers.` +
+        (resolvedCount ? ` ${resolvedCount} resolved thread${resolvedCount === 1 ? "" : "s"} omitted.` : ""),
+    );
+  } else {
+    header.push(
+      `  No open comment threads.${resolvedCount ? ` ${resolvedCount} resolved thread${resolvedCount === 1 ? "" : "s"} omitted.` : ""}`,
+    );
+  }
+  header.push(`  Plain markdown without feedback: ${origin}/p/${plan.id}/md?plain=1`);
+
+  // Walk the source and emit each block followed by its open threads, keeping
+  // the original text byte-for-byte between insertions.
+  const parts: string[] = [`<!--\n${header.join("\n")}\n-->\n\n`];
+  let cursor = 0;
+  for (const block of blocks) {
+    const start = markdown.indexOf(block.source, cursor);
+    if (start === -1) continue; // defensive: block sources are substrings of the input
+    const end = start + block.source.length;
+    parts.push(markdown.slice(cursor, end));
+    cursor = end;
+    const threads = byBlock.get(block.id);
+    if (threads) {
+      for (const thread of threads) {
+        parts.push(`\n<!-- REVIEWER COMMENT on the block above [open]:\n${threadText(thread)}\n-->`);
+      }
+    }
+  }
+  parts.push(markdown.slice(cursor));
+  if (general.length) {
+    parts.push(
+      `\n\n<!-- GENERAL REVIEWER COMMENTS on this plan [open]:\n${general.map(threadText).join("\n")}\n-->`,
+    );
+  }
+  return parts.join("") + "\n";
+}
+
 // --- Agent API (Bearer msp_…) ---
 
 async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
@@ -419,7 +535,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
     )
       .bind(id, title, markdown, note, now)
       .run();
-    return json({ id, url: `${url.origin}/p/${id}`, raw_url: `${url.origin}/p/${id}.md`, version: 1, title, status: "open" }, 201);
+    return json({ id, url: `${url.origin}/p/${id}`, raw_url: `${url.origin}/p/${id}/md`, version: 1, title, status: "open" }, 201);
   }
 
   // GET /api/agent/plans — list plans owned by this token's user.
@@ -437,7 +553,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
       plans: results.map((p) => ({
         id: p.id,
         url: `${url.origin}/p/${p.id}`,
-        raw_url: `${url.origin}/p/${p.id}.md`,
+        raw_url: `${url.origin}/p/${p.id}/md`,
         title: p.title,
         status: deriveStatus(p.approvals, p.changes),
         current_version: p.current_version,
@@ -470,7 +586,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
     return json({
       id: plan.id,
       url: `${url.origin}/p/${plan.id}`,
-      raw_url: `${url.origin}/p/${plan.id}.md`,
+      raw_url: `${url.origin}/p/${plan.id}/md`,
       title: plan.title,
       status,
       current_version: plan.current_version,
@@ -514,7 +630,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
     )
       .bind(title, version, now, plan.id)
       .run();
-    return json({ id: plan.id, url: `${url.origin}/p/${plan.id}`, raw_url: `${url.origin}/p/${plan.id}.md`, version, title, status: "open" });
+    return json({ id: plan.id, url: `${url.origin}/p/${plan.id}`, raw_url: `${url.origin}/p/${plan.id}/md`, version, title, status: "open" });
   }
 
   // GET /api/agent/plans/:id/comments[?since=ts]
@@ -937,10 +1053,14 @@ export default {
 
     // Raw markdown for a plan — deliberately unauthenticated so agents and
     // tools can fetch the plan text with just the link (ids are unguessable).
-    const rawMatch = url.pathname.match(/^\/p\/([a-f0-9]{10})\.md$/);
+    // Canonical form is /p/:id/md; the earlier /p/:id.md form redirects.
+    const rawMatch = url.pathname.match(/^\/p\/([a-f0-9]{10})(\.md|\/md)$/);
     if (rawMatch) {
       if (req.method !== "GET" && req.method !== "HEAD") {
         return new Response("method not allowed\n", { status: 405, headers: { allow: "GET, HEAD" } });
+      }
+      if (rawMatch[2] === ".md") {
+        return Response.redirect(`${url.origin}/p/${rawMatch[1]}/md${url.search}`, 301);
       }
       const plan = await getPlan(env, rawMatch[1]!);
       if (!plan) return new Response("not found\n", { status: 404 });
@@ -950,7 +1070,10 @@ export default {
       }
       const markdown = await getVersionMarkdown(env, plan.id, version);
       if (markdown === null) return new Response("unknown version\n", { status: 404 });
-      return new Response(markdown, {
+      const body = url.searchParams.get("plain") === "1"
+        ? markdown
+        : await annotatedMarkdown(env, plan, version, markdown, url.origin);
+      return new Response(body, {
         headers: {
           "content-type": "text/markdown; charset=utf-8",
           "cache-control": "no-store",

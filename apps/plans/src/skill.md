@@ -65,7 +65,7 @@ jq -n --arg title "Your specific plan title" --rawfile md plan.md \
     -d @- https://plans.myslop.app/api/agent/plans
 ```
 
-Returns `{"id": "…", "url": "https://plans.myslop.app/p/…", "raw_url": "https://plans.myslop.app/p/….md", "version": 1, …}`.
+Returns `{"id": "…", "url": "https://plans.myslop.app/p/…", "raw_url": "https://plans.myslop.app/p/…/md", "version": 1, …}`.
 **Give the `url` to the user** — that's where they review. Reviewers must sign
 in (shoo.dev), and anyone signed in with the link can comment and review.
 
@@ -76,14 +76,19 @@ authentication required**, so any agent or tool with the link can read the
 plan without your API token:
 
 ```sh
-curl -fsS https://plans.myslop.app/p/<id>.md        # current version
-curl -fsS "https://plans.myslop.app/p/<id>.md?v=2"  # a specific version
+curl -fsS https://plans.myslop.app/p/<id>/md            # current version + reviewer feedback
+curl -fsS "https://plans.myslop.app/p/<id>/md?v=2"      # a specific version
+curl -fsS "https://plans.myslop.app/p/<id>/md?plain=1"  # the plan markdown only
 ```
 
-Use it to hand the current plan text to subagents or other tools, or to
-recover the exact markdown you're about to revise. The response is the
-markdown alone (`text/markdown`); the served version is echoed in the
-`x-plan-version` header.
+By default the response embeds review status and **open comment threads as
+`REVIEWER COMMENT` HTML comment markers**, each placed directly under the
+block of the plan it refers to (general comments at the end). A header
+comment explains the plan id, version, and review status. The markers are
+reviewer feedback on the plan, not part of it — when revising, address each
+open comment and publish markdown **without** any markers. Use `?plain=1`
+whenever you need the stored markdown untouched (for example as the base text
+for a revision). The served version is echoed in the `x-plan-version` header.
 
 ## Check status and pull feedback
 

@@ -114,11 +114,11 @@ describe("agent API", () => {
     expect(status.current_version).toBe(1);
     expect((status.versions as unknown[]).length).toBe(1);
 
-    expect(status.raw_url).toBe(`${BASE}/p/${created.id}.md`);
+    expect(status.raw_url).toBe(`${BASE}/p/${created.id}/md`);
 
     const list = await (await call("GET", "/api/agent/plans", { token: OWNER_TOKEN })).json() as { plans: { id: string; raw_url: string }[] };
     expect(list.plans.map((p) => p.id)).toEqual([created.id]);
-    expect(list.plans[0]!.raw_url).toBe(`${BASE}/p/${created.id}.md`);
+    expect(list.plans[0]!.raw_url).toBe(`${BASE}/p/${created.id}/md`);
   });
 
   test("rejects missing/invalid auth and hides plans from other tokens", async () => {
@@ -364,26 +364,88 @@ describe("viewer API and pages", () => {
     expect(skill).toContain("plan-review");
   });
 
-  test("serves raw markdown unauthenticated", async () => {
+  test("serves raw markdown at /md unauthenticated; .md redirects", async () => {
     const created = await createPlan();
-    const raw = await call("GET", `/p/${created.id}.md`);
-    expect(raw.status).toBe(200);
-    expect(raw.headers.get("content-type")).toContain("text/markdown");
-    expect(await raw.text()).toBe(PLAN_MD);
+
+    // Legacy .md form redirects to the canonical /md, preserving the query.
+    const legacy = await call("GET", `/p/${created.id}.md?v=1`);
+    expect(legacy.status).toBe(301);
+    expect(legacy.headers.get("location")).toBe(`${BASE}/p/${created.id}/md?v=1`);
+
+    // Plain mode returns the stored markdown untouched.
+    const plain = await call("GET", `/p/${created.id}/md?plain=1`);
+    expect(plain.status).toBe(200);
+    expect(plain.headers.get("content-type")).toContain("text/markdown");
+    expect(await plain.text()).toBe(PLAN_MD);
+
+    // Default mode embeds a status header plus the full plan.
+    const bare = await (await call("GET", `/p/${created.id}/md`)).text();
+    expect(bare).toContain(PLAN_MD);
+    expect(bare).toContain(`plan ${created.id}`);
+    expect(bare).toContain("No open comment threads");
 
     // After publishing v2, the bare URL serves the current version and ?v pins one.
     await call("PUT", `/api/agent/plans/${created.id}`, { token: OWNER_TOKEN, body: { markdown: "# v2" } });
-    const current = await call("GET", `/p/${created.id}.md`);
+    const current = await call("GET", `/p/${created.id}/md?plain=1`);
     expect(await current.text()).toBe("# v2");
     expect(current.headers.get("x-plan-version")).toBe("2");
-    const pinned = await call("GET", `/p/${created.id}.md?v=1`);
+    const pinned = await call("GET", `/p/${created.id}/md?v=1&plain=1`);
     expect(await pinned.text()).toBe(PLAN_MD);
     expect(pinned.headers.get("x-plan-version")).toBe("1");
 
-    expect((await call("GET", `/p/${created.id}.md?v=9`)).status).toBe(404);
-    expect((await call("GET", `/p/${created.id}.md?v=abc`)).status).toBe(404);
-    expect((await call("GET", "/p/0123456789.md")).status).toBe(404);
-    expect((await call("POST", `/p/${created.id}.md`)).status).toBe(405);
+    expect((await call("GET", `/p/${created.id}/md?v=9`)).status).toBe(404);
+    expect((await call("GET", `/p/${created.id}/md?v=abc`)).status).toBe(404);
+    expect((await call("GET", "/p/0123456789/md")).status).toBe(404);
+    expect((await call("POST", `/p/${created.id}/md`)).status).toBe(405);
+  });
+
+  test("raw markdown embeds open reviewer feedback under the right blocks", async () => {
+    const created = await createPlan();
+    const blocks = renderPlan(PLAN_MD).blocks;
+    const li = blocks.find((b) => b.text === "phase two")!;
+
+    // Reviewer comments a block, the agent replies, and a general comment
+    // plus a review verdict land too.
+    const commented = await call("POST", `/api/plans/${created.id}/comments`, {
+      sid: REVIEWER_SID,
+      body: { body: "What happens between the phases?", block_id: li.id, version: 1 },
+    });
+    const { id: commentId } = (await commented.json()) as { id: string };
+    await call("POST", `/api/agent/plans/${created.id}/comments`, {
+      token: OWNER_TOKEN,
+      body: { body: "A one-week bake period.", reply_to: commentId },
+    });
+    await call("POST", `/api/plans/${created.id}/comments`, {
+      sid: REVIEWER_SID,
+      body: { body: "Also add a rollback section.", version: 1 },
+    });
+    await call("POST", `/api/plans/${created.id}/review`, {
+      sid: REVIEWER_SID,
+      body: { verdict: "changes_requested", note: "phases need detail", version: 1 },
+    });
+
+    const annotated = await (await call("GET", `/p/${created.id}/md`)).text();
+    expect(annotated).toContain("Status: changes_requested");
+    expect(annotated).toContain('requested changes — "phases need detail"');
+    // Block thread sits after the block it refers to, with the agent reply.
+    expect(annotated).toContain("REVIEWER COMMENT on the block above [open]");
+    expect(annotated.indexOf("What happens between the phases?")).toBeGreaterThan(annotated.indexOf("- phase two"));
+    expect(annotated).toContain("A one-week bake period.");
+    expect(annotated).toContain("(agent — you)");
+    // General thread lands at the end.
+    expect(annotated).toContain("GENERAL REVIEWER COMMENTS");
+    expect(annotated).toContain("Also add a rollback section.");
+    // Plain mode stays untouched.
+    expect(await (await call("GET", `/p/${created.id}/md?plain=1`)).text()).toBe(PLAN_MD);
+
+    // Resolved threads are omitted but counted.
+    await call("POST", `/api/agent/plans/${created.id}/comments/${commentId}/resolve`, {
+      token: OWNER_TOKEN,
+      body: {},
+    });
+    const afterResolve = await (await call("GET", `/p/${created.id}/md`)).text();
+    expect(afterResolve).not.toContain("What happens between the phases?");
+    expect(afterResolve).toContain("1 resolved thread omitted");
   });
 
   test("cross-origin mutations are rejected", async () => {
