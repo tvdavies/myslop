@@ -114,8 +114,11 @@ describe("agent API", () => {
     expect(status.current_version).toBe(1);
     expect((status.versions as unknown[]).length).toBe(1);
 
-    const list = await (await call("GET", "/api/agent/plans", { token: OWNER_TOKEN })).json() as { plans: { id: string }[] };
+    expect(status.raw_url).toBe(`${BASE}/p/${created.id}.md`);
+
+    const list = await (await call("GET", "/api/agent/plans", { token: OWNER_TOKEN })).json() as { plans: { id: string; raw_url: string }[] };
     expect(list.plans.map((p) => p.id)).toEqual([created.id]);
+    expect(list.plans[0]!.raw_url).toBe(`${BASE}/p/${created.id}.md`);
   });
 
   test("rejects missing/invalid auth and hides plans from other tokens", async () => {
@@ -359,6 +362,28 @@ describe("viewer API and pages", () => {
     expect(await setup.text()).toContain("MYSLOP_PLANS_TOKEN");
     const skill = await (await call("GET", "/skill")).text();
     expect(skill).toContain("plan-review");
+  });
+
+  test("serves raw markdown unauthenticated", async () => {
+    const created = await createPlan();
+    const raw = await call("GET", `/p/${created.id}.md`);
+    expect(raw.status).toBe(200);
+    expect(raw.headers.get("content-type")).toContain("text/markdown");
+    expect(await raw.text()).toBe(PLAN_MD);
+
+    // After publishing v2, the bare URL serves the current version and ?v pins one.
+    await call("PUT", `/api/agent/plans/${created.id}`, { token: OWNER_TOKEN, body: { markdown: "# v2" } });
+    const current = await call("GET", `/p/${created.id}.md`);
+    expect(await current.text()).toBe("# v2");
+    expect(current.headers.get("x-plan-version")).toBe("2");
+    const pinned = await call("GET", `/p/${created.id}.md?v=1`);
+    expect(await pinned.text()).toBe(PLAN_MD);
+    expect(pinned.headers.get("x-plan-version")).toBe("1");
+
+    expect((await call("GET", `/p/${created.id}.md?v=9`)).status).toBe(404);
+    expect((await call("GET", `/p/${created.id}.md?v=abc`)).status).toBe(404);
+    expect((await call("GET", "/p/0123456789.md")).status).toBe(404);
+    expect((await call("POST", `/p/${created.id}.md`)).status).toBe(405);
   });
 
   test("cross-origin mutations are rejected", async () => {

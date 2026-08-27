@@ -419,7 +419,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
     )
       .bind(id, title, markdown, note, now)
       .run();
-    return json({ id, url: `${url.origin}/p/${id}`, version: 1, title, status: "open" }, 201);
+    return json({ id, url: `${url.origin}/p/${id}`, raw_url: `${url.origin}/p/${id}.md`, version: 1, title, status: "open" }, 201);
   }
 
   // GET /api/agent/plans — list plans owned by this token's user.
@@ -437,6 +437,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
       plans: results.map((p) => ({
         id: p.id,
         url: `${url.origin}/p/${p.id}`,
+        raw_url: `${url.origin}/p/${p.id}.md`,
         title: p.title,
         status: deriveStatus(p.approvals, p.changes),
         current_version: p.current_version,
@@ -469,6 +470,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
     return json({
       id: plan.id,
       url: `${url.origin}/p/${plan.id}`,
+      raw_url: `${url.origin}/p/${plan.id}.md`,
       title: plan.title,
       status,
       current_version: plan.current_version,
@@ -512,7 +514,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
     )
       .bind(title, version, now, plan.id)
       .run();
-    return json({ id: plan.id, url: `${url.origin}/p/${plan.id}`, version, title, status: "open" });
+    return json({ id: plan.id, url: `${url.origin}/p/${plan.id}`, raw_url: `${url.origin}/p/${plan.id}.md`, version, title, status: "open" });
   }
 
   // GET /api/agent/plans/:id/comments[?since=ts]
@@ -930,6 +932,30 @@ export default {
     if (url.pathname === "/dashboard" || url.pathname === "/dashboard/" || url.pathname === "/setup") {
       return new Response(dashboardHtml as unknown as string, {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
+
+    // Raw markdown for a plan — deliberately unauthenticated so agents and
+    // tools can fetch the plan text with just the link (ids are unguessable).
+    const rawMatch = url.pathname.match(/^\/p\/([a-f0-9]{10})\.md$/);
+    if (rawMatch) {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        return new Response("method not allowed\n", { status: 405, headers: { allow: "GET, HEAD" } });
+      }
+      const plan = await getPlan(env, rawMatch[1]!);
+      if (!plan) return new Response("not found\n", { status: 404 });
+      const version = url.searchParams.has("v") ? Number(url.searchParams.get("v")) : plan.current_version;
+      if (!Number.isInteger(version) || version < 1 || version > plan.current_version) {
+        return new Response("unknown version\n", { status: 404 });
+      }
+      const markdown = await getVersionMarkdown(env, plan.id, version);
+      if (markdown === null) return new Response("unknown version\n", { status: 404 });
+      return new Response(markdown, {
+        headers: {
+          "content-type": "text/markdown; charset=utf-8",
+          "cache-control": "no-store",
+          "x-plan-version": String(version),
+        },
       });
     }
 
