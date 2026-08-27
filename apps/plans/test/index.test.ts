@@ -378,11 +378,13 @@ describe("viewer API and pages", () => {
     expect(plain.headers.get("content-type")).toContain("text/markdown");
     expect(await plain.text()).toBe(PLAN_MD);
 
-    // Default mode embeds a status header plus the full plan.
+    // Default mode prefixes YAML frontmatter, then the full plan.
     const bare = await (await call("GET", `/p/${created.id}/md`)).text();
+    expect(bare.startsWith("---\n")).toBe(true);
     expect(bare).toContain(PLAN_MD);
-    expect(bare).toContain(`plan ${created.id}`);
-    expect(bare).toContain("No open comment threads");
+    expect(bare).toContain(`id: ${created.id}`);
+    expect(bare).toContain("status: open");
+    expect(bare).toContain("open_comment_threads: 0");
 
     // After publishing v2, the bare URL serves the current version and ?v pins one.
     await call("PUT", `/api/agent/plans/${created.id}`, { token: OWNER_TOKEN, body: { markdown: "# v2" } });
@@ -399,53 +401,48 @@ describe("viewer API and pages", () => {
     expect((await call("POST", `/p/${created.id}/md`)).status).toBe(405);
   });
 
-  test("raw markdown embeds open reviewer feedback under the right blocks", async () => {
+  test("raw markdown carries metadata frontmatter, not comment bodies", async () => {
     const created = await createPlan();
     const blocks = renderPlan(PLAN_MD).blocks;
     const li = blocks.find((b) => b.text === "phase two")!;
 
-    // Reviewer comments a block, the agent replies, and a general comment
-    // plus a review verdict land too.
     const commented = await call("POST", `/api/plans/${created.id}/comments`, {
       sid: REVIEWER_SID,
       body: { body: "What happens between the phases?", block_id: li.id, version: 1 },
     });
     const { id: commentId } = (await commented.json()) as { id: string };
-    await call("POST", `/api/agent/plans/${created.id}/comments`, {
-      token: OWNER_TOKEN,
-      body: { body: "A one-week bake period.", reply_to: commentId },
-    });
     await call("POST", `/api/plans/${created.id}/comments`, {
       sid: REVIEWER_SID,
-      body: { body: "Also add a rollback section.", version: 1 },
+      body: { body: "Please add a rollback section.", version: 1 },
     });
     await call("POST", `/api/plans/${created.id}/review`, {
       sid: REVIEWER_SID,
       body: { verdict: "changes_requested", note: "phases need detail", version: 1 },
     });
 
-    const annotated = await (await call("GET", `/p/${created.id}/md`)).text();
-    expect(annotated).toContain("Status: changes_requested");
-    expect(annotated).toContain('requested changes — "phases need detail"');
-    // Block thread sits after the block it refers to, with the agent reply.
-    expect(annotated).toContain("REVIEWER COMMENT on the block above [open]");
-    expect(annotated.indexOf("What happens between the phases?")).toBeGreaterThan(annotated.indexOf("- phase two"));
-    expect(annotated).toContain("A one-week bake period.");
-    expect(annotated).toContain("(agent — you)");
-    // General thread lands at the end.
-    expect(annotated).toContain("GENERAL REVIEWER COMMENTS");
-    expect(annotated).toContain("Also add a rollback section.");
-    // Plain mode stays untouched.
+    const raw = await (await call("GET", `/p/${created.id}/md`)).text();
+    expect(raw.startsWith("---\n")).toBe(true);
+    expect(raw).toContain('title: "Service rollout plan"');
+    expect(raw).toContain('author: "Owner"');
+    expect(raw).toContain("status: changes_requested");
+    expect(raw).toContain("version: 1");
+    expect(raw).toContain("open_comment_threads: 2");
+    expect(raw).toContain('- "Reviewer: requested changes — phases need detail"');
+    expect(raw).toContain(PLAN_MD);
+    // Comment bodies live behind the comments API, not in the document.
+    expect(raw).not.toContain("What happens between the phases?");
+    expect(raw).not.toContain("Please add a rollback section.");
+    // Plain mode: no frontmatter at all.
     expect(await (await call("GET", `/p/${created.id}/md?plain=1`)).text()).toBe(PLAN_MD);
 
-    // Resolved threads are omitted but counted.
+    // Resolving a thread updates the counts.
     await call("POST", `/api/agent/plans/${created.id}/comments/${commentId}/resolve`, {
       token: OWNER_TOKEN,
       body: {},
     });
     const afterResolve = await (await call("GET", `/p/${created.id}/md`)).text();
-    expect(afterResolve).not.toContain("What happens between the phases?");
-    expect(afterResolve).toContain("1 resolved thread omitted");
+    expect(afterResolve).toContain("open_comment_threads: 1");
+    expect(afterResolve).toContain("resolved_comment_threads: 1");
   });
 
   test("cross-origin mutations are rejected", async () => {

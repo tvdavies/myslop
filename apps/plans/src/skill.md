@@ -76,17 +76,17 @@ authentication required**, so any agent or tool with the link can read the
 plan without your API token:
 
 ```sh
-curl -fsS https://plans.myslop.app/p/<id>/md            # current version + reviewer feedback
+curl -fsS https://plans.myslop.app/p/<id>/md            # current version, with frontmatter
 curl -fsS "https://plans.myslop.app/p/<id>/md?v=2"      # a specific version
-curl -fsS "https://plans.myslop.app/p/<id>/md?plain=1"  # the plan markdown only
+curl -fsS "https://plans.myslop.app/p/<id>/md?plain=1"  # stored markdown only, no frontmatter
 ```
 
-By default the response embeds review status and **open comment threads as
-`REVIEWER COMMENT` HTML comment markers**, each placed directly under the
-block of the plan it refers to (general comments at the end). A header
-comment explains the plan id, version, and review status. The markers are
-reviewer feedback on the plan, not part of it — when revising, address each
-open comment and publish markdown **without** any markers. Use `?plain=1`
+By default the document is prefixed with YAML frontmatter carrying metadata
+only: `title`, `author`, `status`, `version` / `current_version` (plus the
+version note and publish time), `created` / `updated` timestamps, review
+verdicts, and `open_comment_threads` / `resolved_comment_threads` counts.
+Comment bodies are **not** embedded — when `open_comment_threads` is non-zero,
+pull them (with block excerpts) from the comments API above. Use `?plain=1`
 whenever you need the stored markdown untouched (for example as the base text
 for a revision). The served version is echoed in the `x-plan-version` header.
 
