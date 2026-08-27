@@ -80,8 +80,12 @@
   }
   code, pre, .mono { font-family: inherit; }
   .shell { display: grid; grid-template-columns: 1fr minmax(0, 780px) 1fr; }
-  .wrap { grid-column: 2; min-width: 0; padding: 28px 32px 140px; }
-  header.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 40px; font-size: 14px; }
+  .wrap { grid-column: 2; min-width: 0; padding: 0 32px 140px; }
+  header.top {
+    position: sticky; top: 0; z-index: 5; background: var(--bg);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 0 12px; margin-bottom: 32px; font-size: 14px;
+  }
   .logo { font-weight: 600; }
   .logo a { color: var(--text); text-decoration: none; }
   .logo .muted { color: var(--dim); font-weight: 400; }
@@ -146,21 +150,22 @@
 
   /* --- document --- */
   article { padding: 10px 34px 0 0; line-height: 1.7; }
-  article h1, article h2, article h3, article h4, article h5, article h6 { line-height: 1.35; margin: 34px 0 10px; }
+  article h1, article h2, article h3, article h4, article h5, article h6 { line-height: 1.35; margin: 40px 0 12px; }
+  article h1, article h2 { margin-top: 56px; margin-bottom: 16px; }
   article h1 { font-size: 23px; } article h2 { font-size: 20px; } article h3 { font-size: 17.5px; }
   article h4, article h5, article h6 { font-size: 16px; }
-  article p { margin: 13px 0; }
-  article ul, article ol { margin: 13px 0; padding-left: 24px; }
-  article li { margin: 5px 0; }
+  article p { margin: 17px 0; }
+  article ul, article ol { margin: 17px 0; padding-left: 24px; }
+  article li { margin: 7px 0; }
   article li > ul, article li > ol { margin: 4px 0; }
   article pre {
     background: var(--code-bg); border: 1px solid var(--border); border-radius: 7px;
-    padding: 14px 16px; margin: 16px 0; overflow-x: auto; font-size: 14px; line-height: 1.5;
+    padding: 14px 16px; margin: 20px 0; overflow-x: auto; font-size: 14px; line-height: 1.5;
   }
   article code { background: var(--code-bg); border-radius: 4px; padding: 1px 5px; font-size: 0.9em; }
   article pre code { background: none; padding: 0; font-size: inherit; }
-  article blockquote { border-left: 3px solid var(--border); color: var(--dim); padding: 2px 14px; margin: 12px 0; }
-  article table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  article blockquote { border-left: 3px solid var(--border); color: var(--dim); padding: 2px 14px; margin: 17px 0; }
+  article table { border-collapse: collapse; margin: 20px 0; font-size: 14px; }
   article th, article td { border: 1px solid var(--border); padding: 6px 12px; text-align: left; }
   article th { background: var(--code-bg); }
   article img { max-width: 100%; border: 1px solid var(--border); border-radius: 7px; }
@@ -195,8 +200,8 @@
   /* --- contents rail --- */
   #toc {
     grid-column: 1; justify-self: end; align-self: start;
-    position: sticky; top: 36px; width: 232px; margin: 96px 40px 0 24px;
-    max-height: calc(100vh - 72px); overflow-y: auto;
+    position: sticky; top: 76px; width: 232px; margin: 96px 40px 0 24px;
+    max-height: calc(100vh - 100px); overflow-y: auto;
     font-size: 12.5px; line-height: 1.5; padding-bottom: 24px;
   }
   .toc-title {
@@ -208,7 +213,7 @@
   #toc a.active { color: var(--accent); }
   #toc a.lvl2 { padding-left: 20px; }
   #toc a.lvl3 { padding-left: 32px; }
-  #doc [data-block-id] { scroll-margin-top: 28px; }
+  #doc [data-block-id] { scroll-margin-top: 72px; }
   body.diffing #toc { display: none; }
   @media (max-width: 1340px) { #toc { display: none; } }
   @media (max-width: 1760px) { body.tray-open #toc { display: none; } }
