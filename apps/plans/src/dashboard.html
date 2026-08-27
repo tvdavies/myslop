@@ -3,30 +3,69 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>plans.myslop.app</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23374151'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' font-family='sans-serif' fill='%23fff'%3Ep%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
 <style>
   :root {
+    color-scheme: light;
     --bg: #f8f9fa;
     --panel: #ffffff;
     --border: #e2e5e9;
     --text: #1f2328;
     --dim: #6b7280;
     --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --accent-bg: #eff4fe;
+    --accent-border: #bfd3f8;
     --danger: #dc2626;
+    --danger-bg: #fef2f2;
     --ok: #15803d;
+    --ok-bg: #f0fdf4;
+    --ok-border: #bbe3c8;
     --warn: #b45309;
+    --warn-bg: #fef8ec;
+    --warn-border: #f5d9a8;
+    --hover: #f3f4f6;
+    --toast-bg: #1f2328;
+    --toast-fg: #ffffff;
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0e1116;
+    --panel: #161b23;
+    --border: #2a3140;
+    --text: #dde2e9;
+    --dim: #8e97a6;
+    --accent: #4d8bf5;
+    --accent-hover: #6b9ef7;
+    --accent-bg: #1a2740;
+    --accent-border: #31538c;
+    --danger: #f07171;
+    --danger-bg: #2c1719;
+    --ok: #4cc38a;
+    --ok-bg: #132a1d;
+    --ok-border: #265c3d;
+    --warn: #e0a83e;
+    --warn-bg: #2b2110;
+    --warn-border: #5e4a1e;
+    --hover: #212938;
+    --toast-bg: #e7eaee;
+    --toast-fg: #14171c;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    font-size: 14px;
+    font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    font-size: 15px;
     line-height: 1.5;
     min-height: 100vh;
   }
-  code, .mono { font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace; }
+  code, .mono { font-family: inherit; }
   .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 24px 80px; }
   header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
   .logo { font-weight: 600; font-size: 15px; }
@@ -39,16 +78,17 @@
     font: inherit; cursor: pointer; border: 1px solid var(--border);
     background: var(--panel); color: var(--text); border-radius: 6px; padding: 6px 12px;
   }
-  button:hover { background: #f3f4f6; }
+  button:hover { background: var(--hover); }
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  button.primary:hover { background: #1d4ed8; }
+  button.primary:hover { background: var(--accent-hover); }
   button.small { padding: 3px 9px; font-size: 12.5px; }
   button.iconbtn {
     padding: 5px; width: 28px; height: 28px; display: inline-flex;
     align-items: center; justify-content: center; color: var(--dim);
   }
   button.iconbtn:hover { color: var(--text); }
-  button.iconbtn.danger:hover { color: var(--danger); border-color: var(--danger); background: #fef2f2; }
+  button.iconbtn.danger:hover { color: var(--danger); border-color: var(--danger); background: var(--danger-bg); }
+  #theme-btn { width: 32px; padding: 6px 0; text-align: center; }
   input[type=text] {
     font: inherit; background: var(--panel); border: 1px solid var(--border);
     color: var(--text); border-radius: 6px; padding: 6px 10px; min-width: 220px;
@@ -57,7 +97,7 @@
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
   tr:last-child td { border-bottom: none; }
-  tbody tr:hover { background: #fafbfc; }
+  tbody tr:hover { background: var(--hover); }
   th { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--dim); font-weight: 500; }
   .pname { display: flex; align-items: center; gap: 9px; min-width: 0; }
   .pname svg { flex: none; color: var(--dim); }
@@ -69,11 +109,11 @@
     font-size: 12px; padding: 2px 10px; border-radius: 99px;
     border: 1px solid var(--border); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
   }
-  .status.approved { color: var(--ok); border-color: #bbe3c8; background: #f0fdf4; }
-  .status.changes_requested { color: var(--warn); border-color: #f5d9a8; background: #fef8ec; }
+  .status.approved { color: var(--ok); border-color: var(--ok-border); background: var(--ok-bg); }
+  .status.changes_requested { color: var(--warn); border-color: var(--warn-border); background: var(--warn-bg); }
   .row-actions { display: flex; gap: 5px; justify-content: flex-end; }
   .toolbar { display: flex; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-  .secret-reveal { margin: 12px 14px; padding: 12px 14px; border: 1px solid #bfd3f8; border-radius: 6px; background: #eff4fe; }
+  .secret-reveal { margin: 12px 14px; padding: 12px 14px; border: 1px solid var(--accent-border); border-radius: 6px; background: var(--accent-bg); }
   .secret-reveal code { word-break: break-all; font-size: 13px; }
   .secret-reveal p { color: var(--dim); font-size: 12.5px; margin-top: 6px; }
   .setup-cta { display: flex; justify-content: center; margin-top: 28px; }
@@ -82,7 +122,7 @@
     color: var(--text); background: var(--panel); border: 1px solid var(--border);
     border-radius: 7px; padding: 9px 18px;
   }
-  .btn-link:hover { background: #f3f4f6; border-color: var(--dim); }
+  .btn-link:hover { background: var(--hover); border-color: var(--dim); }
   .hero { max-width: 420px; margin: 90px auto; text-align: center; }
   .hero h1 { font-size: 22px; margin-bottom: 10px; font-weight: 600; }
   .hero p { color: var(--dim); margin-bottom: 26px; }
@@ -100,22 +140,58 @@
   .token-card a { color: var(--accent); }
   #toast {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-    background: #1f2328; color: #fff; border-radius: 8px;
+    background: var(--toast-bg); color: var(--toast-fg); border-radius: 8px;
     padding: 9px 18px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 10; font-size: 13px;
   }
   #toast.show { opacity: 1; }
-  #toast.error { background: var(--danger); }
+  #toast.error { background: var(--danger); color: #fff; }
   @media (max-width: 720px) { .hide-sm { display: none; } }
 </style>
+<script>
+  // Theme boot: runs before first paint. Preference cycles auto → light → dark;
+  // "auto" follows the system.
+  (() => {
+    const KEY = "plans-theme";
+    const root = document.documentElement;
+    const mq = matchMedia("(prefers-color-scheme: dark)");
+    const stored = () => {
+      const v = localStorage.getItem(KEY);
+      return v === "light" || v === "dark" ? v : null;
+    };
+    const apply = () => {
+      const pref = stored();
+      root.dataset.theme = pref ?? (mq.matches ? "dark" : "light");
+      const btn = document.getElementById("theme-btn");
+      if (btn) {
+        const label = pref ?? "auto";
+        btn.textContent = label === "auto" ? "◐" : label === "dark" ? "☾" : "☀";
+        btn.title = "Theme: " + label + " — click to change";
+      }
+    };
+    mq.addEventListener("change", apply);
+    window.__cycleTheme = () => {
+      const pref = stored();
+      const next = pref === null ? "light" : pref === "light" ? "dark" : null;
+      if (next) localStorage.setItem(KEY, next);
+      else localStorage.removeItem(KEY);
+      apply();
+    };
+    apply();
+    document.addEventListener("DOMContentLoaded", apply);
+  })();
+</script>
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="logo">plans<span class="muted">.myslop.app</span></div>
+    <div style="display:flex; align-items:center; gap:10px;">
+    <button id="theme-btn" onclick="__cycleTheme()"></button>
     <div class="userbox" id="userbox" hidden>
       <img id="user-pic" alt="" hidden>
       <span id="user-name"></span>
       <button class="small" id="signout-btn">Sign out</button>
+    </div>
     </div>
   </header>
 

@@ -65,9 +65,25 @@ jq -n --arg title "Your specific plan title" --rawfile md plan.md \
     -d @- https://plans.myslop.app/api/agent/plans
 ```
 
-Returns `{"id": "…", "url": "https://plans.myslop.app/p/…", "version": 1, …}`.
+Returns `{"id": "…", "url": "https://plans.myslop.app/p/…", "raw_url": "https://plans.myslop.app/p/….md", "version": 1, …}`.
 **Give the `url` to the user** — that's where they review. Reviewers must sign
 in (shoo.dev), and anyone signed in with the link can comment and review.
+
+## Raw markdown
+
+Every plan's markdown is served as plain text at its `raw_url` — **no
+authentication required**, so any agent or tool with the link can read the
+plan without your API token:
+
+```sh
+curl -fsS https://plans.myslop.app/p/<id>.md        # current version
+curl -fsS "https://plans.myslop.app/p/<id>.md?v=2"  # a specific version
+```
+
+Use it to hand the current plan text to subagents or other tools, or to
+recover the exact markdown you're about to revise. The response is the
+markdown alone (`text/markdown`); the served version is echoed in the
+`x-plan-version` header.
 
 ## Check status and pull feedback
 
