@@ -88,7 +88,12 @@
   }
   button.iconbtn:hover { color: var(--text); }
   button.iconbtn.danger:hover { color: var(--danger); border-color: var(--danger); background: var(--danger-bg); }
-  #theme-btn { width: 32px; padding: 6px 0; text-align: center; }
+  button.ghost {
+    border: none; background: none; color: var(--dim); padding: 6px; border-radius: 6px;
+    display: inline-flex; align-items: center; line-height: 1;
+  }
+  button.ghost:hover { background: var(--hover); color: var(--text); }
+  button.ghost svg { width: 18px; height: 18px; }
   input[type=text] {
     font: inherit; background: var(--panel); border: 1px solid var(--border);
     color: var(--text); border-radius: 6px; padding: 6px 10px; min-width: 220px;
@@ -158,14 +163,21 @@
       const v = localStorage.getItem(KEY);
       return v === "light" || v === "dark" ? v : null;
     };
+    // Icons: Lucide (lucide.dev, ISC license) — monitor / sun / moon.
+    const ICONS = {
+      auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>',
+      light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>',
+      dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>',
+    };
     const apply = () => {
       const pref = stored();
       root.dataset.theme = pref ?? (mq.matches ? "dark" : "light");
       const btn = document.getElementById("theme-btn");
       if (btn) {
         const label = pref ?? "auto";
-        btn.textContent = label === "auto" ? "◐" : label === "dark" ? "☾" : "☀";
+        btn.innerHTML = ICONS[label];
         btn.title = "Theme: " + label + " — click to change";
+        btn.setAttribute("aria-label", "Theme: " + label);
       }
     };
     mq.addEventListener("change", apply);
@@ -186,7 +198,7 @@
   <header>
     <div class="logo">plans<span class="muted">.myslop.app</span></div>
     <div style="display:flex; align-items:center; gap:10px;">
-    <button id="theme-btn" onclick="__cycleTheme()"></button>
+    <button id="theme-btn" class="ghost" onclick="__cycleTheme()"></button>
     <div class="userbox" id="userbox" hidden>
       <img id="user-pic" alt="" hidden>
       <span id="user-name"></span>
