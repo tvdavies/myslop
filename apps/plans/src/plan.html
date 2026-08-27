@@ -80,7 +80,7 @@
   .banner button { margin-left: 8px; }
 
   /* --- document --- */
-  article { padding: 10px 0 0 34px; }
+  article { padding: 10px 34px 0 0; }
   article h1, article h2, article h3, article h4, article h5, article h6 { line-height: 1.3; margin: 22px 0 8px; }
   article h1 { font-size: 22px; } article h2 { font-size: 19px; } article h3 { font-size: 16.5px; }
   article h4, article h5, article h6 { font-size: 15px; }
@@ -103,12 +103,15 @@
 
   [data-block-id] { position: relative; }
   .addbtn {
-    position: absolute; left: -32px; top: 1px; width: 24px; height: 24px;
+    position: absolute; right: -32px; top: 1px; width: 24px; height: 24px;
     display: none; align-items: center; justify-content: center;
     font-size: 15px; color: var(--dim); background: var(--panel);
     border: 1px solid var(--border); border-radius: 6px; cursor: pointer; padding: 0;
     line-height: 1; z-index: 2;
   }
+  /* Invisible bridge over the gap between the block and the button, so the
+     block keeps :hover while the pointer travels to the button. */
+  .addbtn::before { content: ""; position: absolute; top: -6px; bottom: -6px; right: 100%; width: 12px; }
   [data-block-id]:hover > .addbtn { display: inline-flex; }
   .addbtn:hover { color: var(--accent); border-color: var(--accent); background: #eff4fe; }
 
@@ -137,14 +140,14 @@
   .composer { margin: 8px 0; }
   .composer .c-actions { display: flex; gap: 8px; margin-top: 6px; justify-content: flex-end; }
 
-  section.general { margin-top: 34px; padding-left: 34px; }
+  section.general { margin-top: 34px; }
   section.general h2 {
     font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px;
     color: var(--dim); margin-bottom: 10px;
   }
 
   /* --- diff view --- */
-  #diffdoc { padding: 10px 0 0 34px; }
+  #diffdoc { padding: 10px 34px 0 0; }
   .dpart { border-left: 3px solid transparent; padding: 0 10px; margin: 2px 0; border-radius: 4px; }
   .dpart.added { border-left-color: var(--ok); background: #f0fdf4; }
   .dpart.removed { border-left-color: var(--danger); background: #fef2f2; opacity: 0.75; }
@@ -161,7 +164,7 @@
   }
   #toast.show { opacity: 1; }
   #toast.error { background: var(--danger); }
-  @media (max-width: 720px) { article, section.general, #diffdoc { padding-left: 20px; } .addbtn { left: -26px; } }
+  @media (max-width: 720px) { article, #diffdoc { padding-right: 26px; } .addbtn { right: -26px; } }
 </style>
 </head>
 <body>
