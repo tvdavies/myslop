@@ -200,7 +200,9 @@
   /* --- contents rail --- */
   #toc {
     grid-column: 1; justify-self: end; align-self: start;
-    position: sticky; top: 76px; width: 232px; margin: 96px 40px 0 24px;
+    /* margin-top matches the sticky offset so the rail is pinned from the
+       start and never shifts on the first scroll. */
+    position: sticky; top: 76px; width: 232px; margin: 76px 40px 0 24px;
     max-height: calc(100vh - 100px); overflow-y: auto;
     font-size: 12.5px; line-height: 1.5; padding-bottom: 24px;
   }
