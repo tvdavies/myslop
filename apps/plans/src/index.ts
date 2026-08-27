@@ -382,120 +382,77 @@ function validBlockId(value: unknown): value is string {
   return typeof value === "string" && /^\d{1,4}-[a-f0-9]{8}$/.test(value);
 }
 
-// --- Annotated raw markdown ---
+// --- Raw markdown frontmatter ---
 //
-// The unauthenticated /p/:id/md endpoint serves the plan markdown with review
-// feedback embedded as HTML comment markers, placed directly under the block
-// each thread refers to, so a model reading the file sees exactly which part
-// of its plan a comment targets. `?plain=1` skips all of this.
+// The unauthenticated /p/:id/md endpoint serves the plan markdown prefixed
+// with YAML frontmatter carrying metadata only: title, author, status,
+// versions, timestamps, review verdicts, and comment-thread counts. Comment
+// bodies are deliberately NOT embedded — they live behind the comments API so
+// a model only spends tokens on them when the counts say there is feedback.
+// `?plain=1` returns the stored markdown untouched.
 
-function hcEsc(text: string): string {
-  // "-->" inside an HTML comment would terminate it early.
-  return text.replace(/-->/g, "-- >");
+function yamlStr(text: string): string {
+  return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\s+/g, " ").trim()}"`;
 }
 
-async function annotatedMarkdown(
+async function markdownWithFrontmatter(
   env: Env,
   plan: PlanRow,
   version: number,
   markdown: string,
   origin: string,
 ): Promise<string> {
-  const [comments, reviews] = await Promise.all([loadComments(env, plan.id), loadReviews(env, plan.id)]);
-  const blocks = renderPlan(markdown).blocks;
-  const roots = comments.filter((c) => !c.parent_id);
-  const openRoots = roots.filter((c) => !c.resolved_at);
-  const resolvedCount = roots.length - openRoots.length;
-  const replies = (id: string) => comments.filter((c) => c.parent_id === id);
-
-  // Anchor open threads to blocks of the served version (content-hash
-  // re-attach across versions); unanchored threads are general comments.
-  const byBlock = new Map<string, CommentRow[]>();
-  const general: CommentRow[] = [];
-  for (const root of openRoots) {
-    const anchor = attachBlockId(root, version, blocks);
-    if (anchor) {
-      const list = byBlock.get(anchor) ?? [];
-      list.push(root);
-      byBlock.set(anchor, list);
-    } else {
-      general.push(root);
-    }
-  }
-
-  const stamp = (ts: number) => new Date(ts).toISOString().slice(0, 10);
-  const who = (c: CommentRow) => {
-    const author = commentAuthor(c);
-    return author.type === "agent"
-      ? `${author.name.replace(/^Agent · /, "")} (agent — you)`
-      : `${author.name} (reviewer)`;
-  };
-  const threadText = (root: CommentRow) => {
-    const lines = [`  ${who(root)}, ${stamp(root.created_at)}: ${hcEsc(root.body).replace(/\n/g, "\n    ")}`];
-    for (const reply of replies(root.id)) {
-      lines.push(`    ↳ ${who(reply)}, ${stamp(reply.created_at)}: ${hcEsc(reply.body).replace(/\n/g, "\n      ")}`);
-    }
-    return lines.join("\n");
-  };
-
+  const [owner, reviews, counts, versionRow] = await Promise.all([
+    env.DB.prepare("SELECT name, email FROM users WHERE id = ?")
+      .bind(plan.user_id)
+      .first<{ name: string | null; email: string | null }>(),
+    loadReviews(env, plan.id),
+    env.DB.prepare(
+      `SELECT SUM(CASE WHEN resolved_at IS NULL THEN 1 ELSE 0 END) AS open, COUNT(*) AS total
+       FROM comments WHERE plan_id = ? AND parent_id IS NULL`,
+    )
+      .bind(plan.id)
+      .first<{ open: number | null; total: number }>(),
+    env.DB.prepare("SELECT note, created_at FROM plan_versions WHERE plan_id = ? AND version = ?")
+      .bind(plan.id, version)
+      .first<{ note: string | null; created_at: number }>(),
+  ]);
   const currentReviews = reviews.filter((r) => r.version === plan.current_version);
   const status = deriveStatus(
     currentReviews.filter((r) => r.verdict === "approved").length,
     currentReviews.filter((r) => r.verdict === "changes_requested").length,
   );
+  const iso = (ts: number) => new Date(ts).toISOString();
+  const open = counts?.open ?? 0;
 
-  const header = [
-    `plans.myslop.app — plan ${plan.id} "${hcEsc(plan.title)}", v${version}${
-      version === plan.current_version ? " (current)" : ` (current is v${plan.current_version})`
-    }. Status: ${status}.`,
+  const lines = [
+    "---",
+    `title: ${yamlStr(plan.title)}`,
+    `id: ${plan.id}`,
+    `url: ${origin}/p/${plan.id}`,
+    `author: ${yamlStr(owner?.name || owner?.email || "unknown")}`,
+    `status: ${status}`,
+    `version: ${version}`,
+    `current_version: ${plan.current_version}`,
   ];
-  for (const r of currentReviews) {
-    header.push(
-      `  review by ${hcEsc(r.user_name)}: ${r.verdict === "approved" ? "approved" : "requested changes"}${
-        r.note ? ` — "${hcEsc(r.note)}"` : ""
-      }`,
-    );
-  }
-  if (openRoots.length) {
-    header.push(
-      `  ${openRoots.length} open comment thread${openRoots.length === 1 ? "" : "s"} from reviewers are embedded`,
-      `  below in "REVIEWER COMMENT" HTML comment markers, each placed directly under the`,
-      `  block of the plan it refers to (general comments at the end). The markers are`,
-      `  feedback on the plan, NOT part of it — address each open comment, then publish`,
-      `  the revised plan without any of these markers.` +
-        (resolvedCount ? ` ${resolvedCount} resolved thread${resolvedCount === 1 ? "" : "s"} omitted.` : ""),
-    );
-  } else {
-    header.push(
-      `  No open comment threads.${resolvedCount ? ` ${resolvedCount} resolved thread${resolvedCount === 1 ? "" : "s"} omitted.` : ""}`,
-    );
-  }
-  header.push(`  Plain markdown without feedback: ${origin}/p/${plan.id}/md?plain=1`);
-
-  // Walk the source and emit each block followed by its open threads, keeping
-  // the original text byte-for-byte between insertions.
-  const parts: string[] = [`<!--\n${header.join("\n")}\n-->\n\n`];
-  let cursor = 0;
-  for (const block of blocks) {
-    const start = markdown.indexOf(block.source, cursor);
-    if (start === -1) continue; // defensive: block sources are substrings of the input
-    const end = start + block.source.length;
-    parts.push(markdown.slice(cursor, end));
-    cursor = end;
-    const threads = byBlock.get(block.id);
-    if (threads) {
-      for (const thread of threads) {
-        parts.push(`\n<!-- REVIEWER COMMENT on the block above [open]:\n${threadText(thread)}\n-->`);
-      }
+  if (versionRow?.note) lines.push(`version_note: ${yamlStr(versionRow.note)}`);
+  if (versionRow) lines.push(`version_published: ${iso(versionRow.created_at)}`);
+  lines.push(
+    `created: ${iso(plan.created_at)}`,
+    `updated: ${iso(plan.updated_at)}`,
+    `open_comment_threads: ${open}`,
+    `resolved_comment_threads: ${(counts?.total ?? 0) - open}`,
+  );
+  if (currentReviews.length) {
+    lines.push("reviews:");
+    for (const r of currentReviews) {
+      lines.push(
+        `  - ${yamlStr(`${r.user_name}: ${r.verdict === "approved" ? "approved" : "requested changes"}${r.note ? ` — ${r.note}` : ""}`)}`,
+      );
     }
   }
-  parts.push(markdown.slice(cursor));
-  if (general.length) {
-    parts.push(
-      `\n\n<!-- GENERAL REVIEWER COMMENTS on this plan [open]:\n${general.map(threadText).join("\n")}\n-->`,
-    );
-  }
-  return parts.join("") + "\n";
+  lines.push("---", "");
+  return lines.join("\n") + markdown + (markdown.endsWith("\n") ? "" : "\n");
 }
 
 // --- Agent API (Bearer msp_…) ---
@@ -1072,7 +1029,7 @@ export default {
       if (markdown === null) return new Response("unknown version\n", { status: 404 });
       const body = url.searchParams.get("plain") === "1"
         ? markdown
-        : await annotatedMarkdown(env, plan, version, markdown, url.origin);
+        : await markdownWithFrontmatter(env, plan, version, markdown, url.origin);
       return new Response(body, {
         headers: {
           "content-type": "text/markdown; charset=utf-8",
