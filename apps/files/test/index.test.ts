@@ -144,3 +144,71 @@ describe("Files app compatibility", () => {
     expect(response.status).toBe(404);
   });
 });
+
+describe("platform identity", () => {
+  function identityEnv() {
+    const { db, env } = identityDatabase();
+    db.exec(`CREATE TABLE files (
+      key TEXT PRIMARY KEY, user_id TEXT NOT NULL, filename TEXT, size INTEGER,
+      content_type TEXT, private INTEGER DEFAULT 0, created_at INTEGER
+    )`);
+    db.query("INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?)").run(
+      "shoo-user",
+      "ada@example.com",
+      "Ada",
+      1,
+    );
+    return {
+      db,
+      env: {
+        ...env,
+        EVENTS_SECRET: "secret",
+        FILES: {
+          put: async (_key: string, _body: unknown, opts: { httpMetadata?: { contentType?: string } }) => ({
+            size: 5,
+            httpMetadata: { contentType: opts.httpMetadata?.contentType },
+          }),
+        },
+      },
+    };
+  }
+
+  const IDENTITY_HEADERS = {
+    "x-myslop-user-id": "plat-1",
+    "x-myslop-user-email": "ada@example.com",
+    "x-myslop-user-name": "Ada",
+  };
+
+  test("uploads with dispatcher-injected identity, joined to the Shoo account by email", async () => {
+    const { db, env } = identityEnv();
+    const response = await worker.fetch(new Request("https://files.myslop.app/report.txt", {
+      method: "PUT",
+      headers: IDENTITY_HEADERS,
+      body: "hello",
+    }) as never, env as never, context()) as unknown as Response;
+    expect(response.status).toBe(201);
+    expect(await response.text()).toMatch(/^https:\/\/files\.myslop\.app\/[a-f0-9]{10}\/report\.txt\n$/);
+    expect(db.query("SELECT user_id, filename FROM files").get()).toEqual({
+      user_id: "shoo-user",
+      filename: "report.txt",
+    });
+  });
+
+  test("verifies identity at /api/verify without a bearer", async () => {
+    const { env } = identityEnv();
+    const response = await worker.fetch(new Request("https://files.myslop.app/api/verify", {
+      headers: IDENTITY_HEADERS,
+    }) as never, env as never, context()) as unknown as Response;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, user: { email: "ada@example.com" } });
+  });
+
+  test("uploads without identity or a valid token still 401", async () => {
+    const { env } = identityEnv();
+    const response = await worker.fetch(new Request("https://files.myslop.app/report.txt", {
+      method: "PUT",
+      body: "hello",
+    }) as never, env as never, context()) as unknown as Response;
+    expect(response.status).toBe(401);
+  });
+});

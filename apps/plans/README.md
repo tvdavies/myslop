@@ -13,7 +13,7 @@ Sign in at **https://plans.myslop.app/dashboard** (auth by [shoo.dev](https://sh
 
 ## API
 
-Agent API (Bearer `msp_…` token, minted in the dashboard):
+Agent API (platform identity, or a legacy Bearer `msp_…` token minted in the dashboard — an `msa_` platform token authenticates directly via dispatcher-injected `x-myslop-user-*` headers, joined to Shoo accounts by verified email):
 
 - `POST /api/agent/plans` `{title, markdown, note?}` → `201 {id, url, version}`. Title is required — it identifies the plan among many.
 - `PUT /api/agent/plans/:id` `{markdown, title?, note?}` → new version (owner token only).

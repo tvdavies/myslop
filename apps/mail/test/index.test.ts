@@ -144,3 +144,50 @@ describe("Mail platform adapters", () => {
     expect((await duplicate.json() as { duplicate?: boolean }).duplicate).toBe(true);
   });
 });
+
+describe("platform identity", () => {
+  function identityEnv() {
+    const { db, env } = identityDatabase();
+    db.exec(`CREATE TABLE inboxes (
+      name TEXT PRIMARY KEY, user_id TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+      claimed INTEGER NOT NULL DEFAULT 0, created_at INTEGER, last_read_at INTEGER, lease_expires_at INTEGER
+    )`);
+    return { db, env: { ...env, FILES: {} } };
+  }
+
+  const IDENTITY_HEADERS = {
+    "x-myslop-user-id": "plat-1",
+    "x-myslop-user-email": "ada@example.com",
+    "x-myslop-user-name": "Ada",
+  };
+
+  test("claims an inbox with dispatcher-injected identity", async () => {
+    const { db, env } = identityEnv();
+    const response = await worker.fetch(new Request("https://mail.myslop.app/claim", {
+      method: "POST",
+      headers: { ...IDENTITY_HEADERS, "content-type": "application/json" },
+      body: JSON.stringify({ name: "big-donkey", note: "staging" }),
+    }) as never, env as never, context([])) as unknown as Response;
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ name: "big-donkey", address: "big-donkey@myslop.app" });
+    expect(db.query("SELECT user_id, claimed FROM inboxes WHERE name = ?").get("big-donkey")).toEqual({
+      user_id: "plat-1",
+      claimed: 1,
+    });
+  });
+
+  test("verifies identity at /api/verify without a bearer", async () => {
+    const { env } = identityEnv();
+    const response = await worker.fetch(new Request("https://mail.myslop.app/api/verify", {
+      headers: IDENTITY_HEADERS,
+    }) as never, env as never, context([])) as unknown as Response;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, user: { email: "ada@example.com" } });
+  });
+
+  test("agent API without identity or a valid token still 401", async () => {
+    const { env } = identityEnv();
+    const response = await worker.fetch(new Request("https://mail.myslop.app/claims") as never, env as never, context([])) as unknown as Response;
+    expect(response.status).toBe(401);
+  });
+});

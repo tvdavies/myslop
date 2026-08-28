@@ -15,22 +15,25 @@ version and can diff them.
 
 Resolve the API token in this order:
 
-1. `$MYSLOP_PLANS_TOKEN` if set
-2. The file `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-plans/token` (shell-agnostic
-   fallback — works even if the user's shell never exported the variable)
+1. `$MYSLOP_APPS_TOKEN` if set — the myslop platform token authenticates here
+   directly
+2. The file `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-apps/token`
+3. Legacy: `$MYSLOP_PLANS_TOKEN` or the file
+   `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-plans/token`
 
-If neither exists, or a request returns `401 unauthorized` (token revoked), have
-the user run this in an interactive terminal, then retry:
+If none exists, or a request returns `401 unauthorized` (token revoked), have
+the user run the platform setup in an interactive terminal, then retry:
 
 ```sh
-curl -fsS https://plans.myslop.app/setup.sh | bash
+curl -fsS https://myslop.cloud/setup.sh | bash
 ```
 
-It opens a page that signs them in and mints a token automatically; they
-copy-paste it once and the script persists it for future shells.
+One platform token covers the myslop-apps CLI and every myslop app (files,
+mail, plans).
 
 ```sh
-TOKEN="${MYSLOP_PLANS_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/myslop-plans/token")}"
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
+TOKEN="${MYSLOP_APPS_TOKEN:-$(cat "$cfg/myslop-apps/token" 2>/dev/null || cat "$cfg/myslop-plans/token")}"
 ```
 
 ## Authoring the plan

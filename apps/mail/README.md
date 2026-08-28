@@ -22,9 +22,9 @@ Two tiers:
 
 The `?wait=` long-poll stays as a fallback.
 
-## Agent API (Bearer `msm_` tokens)
+## Agent API (platform identity or Bearer `msm_` tokens)
 
-Mint tokens in the dashboard. Every request needs `Authorization: Bearer <msm_token>`.
+An `msa_` platform token authenticates directly (`Authorization: Bearer <msa_token>` — the dispatcher verifies it and injects `x-myslop-user-*` identity, joined to Shoo accounts by verified email). Legacy `msm_` tokens minted in the dashboard keep working.
 
 - `POST /claim` `{name?, note?}` — reserve a name (generated `adjective-noun` if omitted). `201` granted, `200` if you already own it, `409` if another account owns it.
 - `GET /claims` — your owned names.
@@ -46,7 +46,8 @@ Mint tokens in the dashboard. Every request needs `Authorization: Bearer <msm_to
 ## Auth model
 
 - **Dashboard**: shoo.dev PKCE in the browser; the worker verifies the ES256 `id_token` against shoo's JWKS (`aud origin:https://mail.myslop.app`) and issues a 30-day session cookie. Users keyed by shoo `pairwise_sub`.
-- **API tokens**: per-user `msm_…` (256-bit), only a SHA-256 hash stored, shown once, revocable. The old shared `API_TOKEN` secret was **retired** (2026-07-27) — only minted tokens authorize.
+- **Platform identity** (preferred): dispatcher-verified `x-myslop-user-*` headers from an `msa_` platform token or platform session; no app token needed.
+- **API tokens** (legacy): per-user `msm_…` (256-bit), only a SHA-256 hash stored, shown once, revocable. The old shared `API_TOKEN` secret was **retired** (2026-07-27) — only minted tokens authorize.
 
 ## Agent setup
 

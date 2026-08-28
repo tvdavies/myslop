@@ -22,7 +22,8 @@ curl -sS --fail-with-body -X PUT -T ./screenshot.png \
 ## Auth model
 
 - **Dashboard**: shoo.dev PKCE flow in the browser (`/authorize` → `/token`); the worker verifies the ES256 `id_token` against shoo's JWKS (`iss https://shoo.dev`, `aud origin:https://files.myslop.app`) and issues its own 30-day session (random id in D1, `HttpOnly` `Secure` `SameSite=Lax` cookie). Users are keyed by shoo's `pairwise_sub`.
-- **Uploads**: per-user tokens (`msf_…`, 256-bit) minted/revoked in the dashboard. Only a SHA-256 hash is stored; the secret is shown once. Revocation is immediate.
+- **Platform identity** (preferred): requests authenticated at the dispatcher — an `msa_` platform token or platform session — arrive with verified `x-myslop-user-*` headers and need no app token. Accounts are joined to Shoo users by verified email, so one platform token covers every myslop app.
+- **Uploads**: platform identity, or legacy per-user tokens (`msf_…`, 256-bit) minted/revoked in the dashboard. Only a SHA-256 hash is stored; the secret is shown once. Revocation is immediate.
 - **Legacy shared token**: retired (2026-07-27). The `UPLOAD_TOKEN` secret was deleted and the code path removed — only minted `msf_` tokens authorize uploads, so every upload is tracked to an account.
 
 ## Agent setup

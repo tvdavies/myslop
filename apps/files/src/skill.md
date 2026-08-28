@@ -11,25 +11,27 @@ Upload files to https://files.myslop.app and get back a permanent URL.
 
 Resolve the API token in this order:
 
-1. `$MYSLOP_FILES_TOKEN` if set
-2. The file `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-files/token` (shell-agnostic
-   fallback — works even if the user's shell never exported the variable)
+1. `$MYSLOP_APPS_TOKEN` if set — the myslop platform token authenticates here
+   directly
+2. The file `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-apps/token`
+3. Legacy: `$MYSLOP_FILES_TOKEN` or the file
+   `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-files/token`
 
-If neither exists, or an upload returns `401 unauthorized` (token revoked), have
-the user run this in an interactive terminal, then retry:
+If none exists, or an upload returns `401 unauthorized` (token revoked), have
+the user run the platform setup in an interactive terminal, then retry:
 
 ```sh
-curl -fsS https://files.myslop.app/setup.sh | bash
+curl -fsS https://myslop.cloud/setup.sh | bash
 ```
 
-It opens a page that signs them in and mints a token automatically (named after
-their machine); they copy-paste it once and the script persists it for future
-shells and writes the fallback file.
+One platform token covers the myslop-apps CLI and every myslop app (files,
+mail, plans) — no per-app setup.
 
 ## Upload
 
 ```sh
-TOKEN="${MYSLOP_FILES_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/myslop-files/token")}"
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
+TOKEN="${MYSLOP_APPS_TOKEN:-$(cat "$cfg/myslop-apps/token" 2>/dev/null || cat "$cfg/myslop-files/token")}"
 curl -sS --fail-with-body -X PUT -T <local-path> \
   -H "Authorization: Bearer $TOKEN" \
   "https://files.myslop.app/<filename>"
