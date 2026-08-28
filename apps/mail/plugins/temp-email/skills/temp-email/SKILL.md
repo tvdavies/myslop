@@ -15,22 +15,25 @@ your OTPs and magic links stay private.
 
 Resolve the API token in this order:
 
-1. `$MYSLOP_MAIL_TOKEN` if set
-2. The file `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-mail/token`
+1. `$MYSLOP_APPS_TOKEN` if set — the myslop platform token authenticates here
+   directly
+2. The file `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-apps/token`
+3. Legacy: `$MYSLOP_MAIL_TOKEN` or the file
+   `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-mail/token`
 
-If neither exists, or a request returns `401 unauthorized` (token revoked), have
-the user run this in an interactive terminal, then retry:
+If none exists, or a request returns `401 unauthorized` (token revoked), have
+the user run the platform setup in an interactive terminal, then retry:
 
 ```sh
-curl -fsS https://mail.myslop.app/setup.sh | bash
+curl -fsS https://myslop.cloud/setup.sh | bash
 ```
 
-It opens a page that signs them in and mints a token automatically; they
-copy-paste it once and the script persists it. Every request needs
-`-H "Authorization: Bearer $MYSLOP_MAIL_TOKEN"`.
+One platform token covers the myslop-apps CLI and every myslop app (files,
+mail, plans). Every request needs `-H "Authorization: Bearer $TOKEN"`.
 
 ```sh
-TOKEN="${MYSLOP_MAIL_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/myslop-mail/token")}"
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
+TOKEN="${MYSLOP_APPS_TOKEN:-$(cat "$cfg/myslop-apps/token" 2>/dev/null || cat "$cfg/myslop-mail/token")}"
 ```
 
 ## Choosing an address

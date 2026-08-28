@@ -5,6 +5,7 @@ import skillMd from "./skill.md";
 import skillHtmlTemplate from "./skill.html";
 import setupShB64 from "./setup-sh.generated";
 import { internalNonceKey, verifyInternalRequest } from "../../../platform/src/internal";
+import { platformIdentity, resolvePlatformUser } from "../../../platform/src/app-identity";
 
 // Decoded once; stored base64 because raw shell text in the bundle trips the
 // Cloudflare API WAF on deploy.
@@ -234,11 +235,19 @@ function sessionCookie(sid: string, maxAgeSeconds: number): string {
   return `${SESSION_COOKIE}=${sid}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
 }
 
-// --- API tokens (msm_) ---
+// --- Agent auth: platform identity headers or legacy msm_ tokens ---
 
 interface TokenOwner {
   userId: string;
-  tokenId: string;
+  tokenId: string | null;
+}
+
+// Platform identity (dispatcher-verified, injected for msa_ tokens and
+// platform sessions) is preferred; legacy per-app msm_ tokens keep working.
+async function agentOwner(req: Request, env: Env): Promise<TokenOwner | null> {
+  const identity = platformIdentity(req);
+  if (identity) return { userId: await resolvePlatformUser(env.DB, identity), tokenId: null };
+  return verifyApiToken(env, bearer(req));
 }
 
 async function verifyApiToken(env: Env, secret: string): Promise<TokenOwner | null> {
@@ -408,9 +417,10 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
     return json({ ok: true }, 200, { "set-cookie": sessionCookie(sid, SESSION_TTL_MS / 1000) });
   }
 
-  // GET /api/verify — check an API token (used by setup.sh). Bearer-authed.
+  // GET /api/verify — check agent credentials (used by setup.sh). Accepts
+  // platform identity or a legacy msm_ bearer, not sessions.
   if (path === "/api/verify" && req.method === "GET") {
-    const owner = await verifyApiToken(env, bearer(req));
+    const owner = await agentOwner(req, env);
     if (!owner) return json({ error: "invalid token" }, 401);
     const u = await env.DB.prepare("SELECT name, email FROM users WHERE id = ?")
       .bind(owner.userId)
@@ -574,14 +584,16 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
   return json({ error: "not found" }, 404);
 }
 
-// --- Agent API (Bearer msm_): claims + inbox access, per-user ownership ---
+// --- Agent API (platform identity or Bearer msm_): claims + inbox access, per-user ownership ---
 
 async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
-  const owner = await verifyApiToken(env, bearer(req));
+  const owner = await agentOwner(req, env);
   if (!owner) return json({ error: "unauthorized" }, 401);
-  ctx.waitUntil(
-    env.DB.prepare("UPDATE tokens SET last_used_at = ? WHERE id = ?").bind(Date.now(), owner.tokenId).run(),
-  );
+  if (owner.tokenId) {
+    ctx.waitUntil(
+      env.DB.prepare("UPDATE tokens SET last_used_at = ? WHERE id = ?").bind(Date.now(), owner.tokenId).run(),
+    );
+  }
   const uid = owner.userId;
   const parts = url.pathname.split("/").filter(Boolean);
 

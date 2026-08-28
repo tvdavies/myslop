@@ -74,10 +74,20 @@ beforeEach(async () => {
 async function call(
   method: string,
   path: string,
-  opts: { token?: string; sid?: string; body?: unknown } = {},
+  opts: {
+    token?: string;
+    sid?: string;
+    body?: unknown;
+    identity?: { id: string; email?: string; name?: string };
+  } = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {};
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
+  if (opts.identity) {
+    headers["x-myslop-user-id"] = opts.identity.id;
+    if (opts.identity.email) headers["x-myslop-user-email"] = opts.identity.email;
+    if (opts.identity.name) headers["x-myslop-user-name"] = opts.identity.name;
+  }
   if (opts.sid) headers.cookie = `sid=${opts.sid}`;
   if (opts.body !== undefined) headers["content-type"] = "application/json";
   return (await worker.fetch(
@@ -101,6 +111,52 @@ async function createPlan(): Promise<{ id: string; url: string; version: number 
   expect(res.status).toBe(201);
   return res.json() as Promise<{ id: string; url: string; version: number }>;
 }
+
+describe("platform identity", () => {
+  const OWNER_IDENTITY = { id: "plat-owner", email: "owner@example.com", name: "Owner" };
+
+  test("authenticates the agent API and joins the token owner's account by email", async () => {
+    const created = await call("POST", "/api/agent/plans", {
+      identity: OWNER_IDENTITY,
+      body: { title: "Identity plan", markdown: PLAN_MD },
+    });
+    expect(created.status).toBe(201);
+    const { id } = (await created.json()) as { id: string };
+    // Same verified email as the msp_ token owner → same account, both credentials see it.
+    const viaToken = await call("GET", `/api/agent/plans/${id}`, { token: OWNER_TOKEN });
+    expect(viaToken.status).toBe(200);
+    const viaIdentity = await call("GET", `/api/agent/plans/${id}`, { identity: OWNER_IDENTITY });
+    expect(viaIdentity.status).toBe(200);
+  });
+
+  test("labels identity comments with the platform user's name", async () => {
+    const plan = await createPlan();
+    const res = await call("POST", `/api/agent/plans/${plan.id}/comments`, {
+      identity: OWNER_IDENTITY,
+      body: { body: "Shipped the first phase." },
+    });
+    expect(res.status).toBe(201);
+    expect(db.query("SELECT author_type, agent_name FROM comments WHERE plan_id = ?").get(plan.id)).toEqual({
+      author_type: "agent",
+      agent_name: "Owner",
+    });
+  });
+
+  test("unknown identities get fresh accounts and cannot see other plans", async () => {
+    const plan = await createPlan();
+    const res = await call("GET", `/api/agent/plans/${plan.id}`, {
+      identity: { id: "plat-stranger", email: "someone-new@example.com" },
+    });
+    expect(res.status).toBe(404);
+    expect(db.query("SELECT id FROM users WHERE id = ?").get("plat-stranger")).toEqual({ id: "plat-stranger" });
+  });
+
+  test("identity verifies at /api/verify without a bearer", async () => {
+    const res = await call("GET", "/api/verify", { identity: OWNER_IDENTITY });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, user: { email: "owner@example.com" } });
+  });
+});
 
 describe("agent API", () => {
   test("creates a plan and reports it via status and list endpoints", async () => {

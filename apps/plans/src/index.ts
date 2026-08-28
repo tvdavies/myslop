@@ -4,6 +4,7 @@ import skillMd from "./skill.md";
 import skillHtmlTemplate from "./skill.html";
 import setupShB64 from "./setup-sh.generated";
 import { diffPlan, renderPlan, type PlanBlock } from "./markdown";
+import { platformIdentity, resolvePlatformUser } from "../../../platform/src/app-identity";
 
 // Decoded lazily-once; stored base64 because raw shell text in the bundle
 // trips the Cloudflare API WAF on deploy.
@@ -228,12 +229,27 @@ function sessionCookie(sid: string, maxAgeSeconds: number): string {
   return `${SESSION_COOKIE}=${sid}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
 }
 
-// --- Agent API tokens ---
+// --- Agent auth: platform identity headers or legacy msp_ tokens ---
 
 interface TokenOwner {
   userId: string;
-  tokenId: string;
+  tokenId: string | null;
   tokenName: string;
+}
+
+// Platform identity (dispatcher-verified, injected for msa_ tokens and
+// platform sessions) is preferred; legacy per-app msp_ tokens keep working.
+// tokenName labels agent comments in the UI.
+async function agentOwner(req: Request, env: Env): Promise<TokenOwner | null> {
+  const identity = platformIdentity(req);
+  if (identity) {
+    return {
+      userId: await resolvePlatformUser(env.DB, identity),
+      tokenId: null,
+      tokenName: identity.name ?? identity.email ?? "agent",
+    };
+  }
+  return verifyAgentToken(env, bearer(req));
 }
 
 async function verifyAgentToken(env: Env, secret: string): Promise<TokenOwner | null> {
@@ -455,16 +471,18 @@ async function markdownWithFrontmatter(
   return lines.join("\n") + markdown + (markdown.endsWith("\n") ? "" : "\n");
 }
 
-// --- Agent API (Bearer msp_…) ---
+// --- Agent API (platform identity or Bearer msp_…) ---
 
 async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
-  const owner = await verifyAgentToken(env, bearer(req));
+  const owner = await agentOwner(req, env);
   if (!owner) return json({ error: "unauthorized" }, 401);
-  ctx.waitUntil(
-    env.DB.prepare("UPDATE tokens SET last_used_at = ? WHERE id = ?")
-      .bind(Date.now(), owner.tokenId)
-      .run(),
-  );
+  if (owner.tokenId) {
+    ctx.waitUntil(
+      env.DB.prepare("UPDATE tokens SET last_used_at = ? WHERE id = ?")
+        .bind(Date.now(), owner.tokenId)
+        .run(),
+    );
+  }
 
   const segments = url.pathname.slice("/api/agent/plans".length).split("/").filter(Boolean);
 
@@ -701,9 +719,10 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
     return json({ ok: true }, 200, { "set-cookie": sessionCookie(sid, SESSION_TTL_MS / 1000) });
   }
 
-  // GET /api/verify — check an agent token (used by setup.sh). Bearer-authed.
+  // GET /api/verify — check agent credentials (used by setup.sh). Accepts
+  // platform identity or a legacy msp_ bearer, not sessions.
   if (path === "/api/verify" && req.method === "GET") {
-    const owner = await verifyAgentToken(env, bearer(req));
+    const owner = await agentOwner(req, env);
     if (!owner) return json({ error: "invalid token" }, 401);
     const u = await env.DB.prepare("SELECT name, email FROM users WHERE id = ?")
       .bind(owner.userId)

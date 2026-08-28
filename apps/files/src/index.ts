@@ -2,6 +2,7 @@ import dashboardHtml from "./dashboard.html";
 import skillMd from "./skill.md";
 import skillHtmlTemplate from "./skill.html";
 import setupShB64 from "./setup-sh.generated";
+import { platformIdentity, resolvePlatformUser } from "../../../platform/src/app-identity";
 
 // Decoded lazily-once; stored base64 because raw shell text in the bundle
 // trips the Cloudflare API WAF on deploy.
@@ -237,11 +238,19 @@ async function verifyAppToken(token: string, secret: string): Promise<string | n
   }
 }
 
-// --- Upload API tokens ---
+// --- Upload auth: platform identity headers or legacy msf_ tokens ---
 
 interface TokenOwner {
   userId: string;
-  tokenId: string;
+  tokenId: string | null;
+}
+
+// Platform identity (dispatcher-verified, injected for msa_ tokens and
+// platform sessions) is preferred; legacy per-app msf_ tokens keep working.
+async function uploadOwner(req: Request, env: Env, candidate: string): Promise<TokenOwner | null> {
+  const identity = platformIdentity(req);
+  if (identity) return { userId: await resolvePlatformUser(env.DB, identity), tokenId: null };
+  return verifyUploadToken(env, candidate);
 }
 
 async function verifyUploadToken(env: Env, secret: string): Promise<TokenOwner | null> {
@@ -360,11 +369,11 @@ async function handleApi(
     );
   }
 
-  // GET /api/verify — check an upload token (used by setup.sh). Bearer-authed,
-  // not session-authed.
+  // GET /api/verify — check upload credentials (used by setup.sh). Accepts
+  // platform identity or a legacy msf_ bearer, not sessions.
   if (path === "/api/verify" && req.method === "GET") {
     const bearer = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
-    const owner = bearer.startsWith(TOKEN_PREFIX) ? await verifyUploadToken(env, bearer) : null;
+    const owner = await uploadOwner(req, env, bearer);
     if (!owner) return json({ error: "invalid token" }, 401);
     const u = await env.DB.prepare("SELECT name, email FROM users WHERE id = ?")
       .bind(owner.userId)
@@ -566,7 +575,7 @@ export default {
       const bearer = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
       const candidate = bearer || req.headers.get("X-Upload-Token") || "";
 
-      const owner = await verifyUploadToken(env, candidate);
+      const owner = await uploadOwner(req, env, candidate);
       if (!owner) return new Response("unauthorized\n", { status: 401 });
 
       const filename = key.split("/").pop() ?? "";
@@ -602,11 +611,13 @@ export default {
             Date.now(),
           )
           .run();
-        ctx.waitUntil(
-          env.DB.prepare("UPDATE tokens SET last_used_at = ? WHERE id = ?")
-            .bind(Date.now(), owner.tokenId)
-            .run(),
-        );
+        if (owner.tokenId) {
+          ctx.waitUntil(
+            env.DB.prepare("UPDATE tokens SET last_used_at = ? WHERE id = ?")
+              .bind(Date.now(), owner.tokenId)
+              .run(),
+          );
+        }
       }
 
       return new Response(`https://${url.hostname}/${objectKey}\n`, {
