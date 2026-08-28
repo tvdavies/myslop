@@ -52,14 +52,14 @@ async function currentDeletionConfirmations(base: string): Promise<Set<string>> 
 }
 
 async function appDirectories(): Promise<{ slug: string; path: string }[]> {
-  const directories: { slug: string; path: string }[] = [];
-  for await (const entry of new Bun.Glob("*/myslop.json").scan({ cwd: APPS_DIR, onlyFiles: true })) {
+  const directories = new Map<string, { slug: string; path: string }>();
+  for await (const entry of new Bun.Glob("*/myslop.{json,yaml,yml}").scan({ cwd: APPS_DIR, onlyFiles: true })) {
     const slug = basename(dirname(resolve(APPS_DIR, entry)));
     const path = resolve(APPS_DIR, slug);
     if (!validAppSlug(slug)) throw new Error(`invalid app directory slug: ${slug}`);
-    directories.push({ slug, path });
+    directories.set(slug, { slug, path });
   }
-  return directories.sort((left, right) => left.slug.localeCompare(right.slug));
+  return [...directories.values()].sort((left, right) => left.slug.localeCompare(right.slug));
 }
 
 export function planApps(localSlugs: string[], remoteApps: RemoteApp[], confirmations: Set<string>): AppPlan[] {

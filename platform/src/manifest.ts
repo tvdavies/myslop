@@ -213,6 +213,7 @@ interface Detection {
   assets: boolean;
   worker: boolean;
   migrations: boolean;
+  schema?: boolean;
 }
 
 function unique(values: string[]): string[] {
@@ -418,7 +419,7 @@ export function resolveManifest(source: unknown, detected: Detection): ResolvedM
     assets: detected.assets,
     worker: detected.worker,
     capabilities: {
-      database: detected.migrations || capabilities.database === true,
+      database: detected.migrations || detected.schema === true || capabilities.database === true,
       files: capabilities.files === true,
       secrets: unique(secrets),
       network: unique(network.map((host) => host.toLowerCase())),
@@ -429,7 +430,9 @@ export function resolveManifest(source: unknown, detected: Detection): ResolvedM
   };
   const runtime = resolved.capabilities;
   const needsWorker = runtime.database || runtime.files || runtime.secrets.length > 0 || runtime.network.length > 0 || runtime.email || runtime.schedules.length > 0 || runtime.durableObjects.length > 0;
-  if (needsWorker && !resolved.worker) throw new Error("runtime capabilities require worker.ts");
+  if (needsWorker && !resolved.worker) {
+    throw new Error(detected.schema ? "schema.sql requires worker.ts" : "runtime capabilities require worker.ts");
+  }
   return resolved;
 }
 

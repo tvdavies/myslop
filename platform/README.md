@@ -7,7 +7,8 @@ Each app gets:
 - An automatically allocated `<slug>.myslop.app` URL
 - Static asset hosting when `public/` exists
 - An isolated Cloudflare Worker when `worker.ts` exists
-- An isolated D1 database when migrations exist or it is explicitly requested
+- An isolated D1 database when `schema.sql` or migrations exist or it is explicitly requested
+- Declarative schema evolution: additive `schema.sql` diffs are applied automatically; destructive changes require an explicit migration
 - An isolated R2 bucket only when file storage is explicitly requested
 - Shoo/Google team authentication enforced by the platform dispatcher
 - Only its declared server-side secrets
@@ -25,15 +26,15 @@ Private and team apps use a short-lived, one-time session exchange from `myslop.
 
 ```text
 my-app/
-  public/                   # optional static assets
-    index.html
+  index.html                # app shell; referenced scripts/styles bundled at deploy
   worker.ts                 # optional module Worker
-  migrations/              # present → D1, migrations applied in name order
-    001_initial.sql
-  myslop.json               # optional non-obvious capabilities
+  schema.sql                # optional declarative schema → D1, additive diffs auto-applied
+  myslop.json               # optional non-obvious capabilities (myslop.yaml also accepted)
+  public/                   # optional raw static assets (overrides root bundling)
+  migrations/               # optional forward-only SQL, applied in name order
 ```
 
-Most apps need no manifest. Static assets, runtimes, and databases with migrations are inferred. Use `myslop.json` for organizational policy and capabilities that source layout cannot reveal:
+Most apps need no manifest. Static assets, runtimes, and databases are inferred from `schema.sql` or `migrations/`. A root `index.html` without `public/` is bundled at deploy time (TypeScript, JSX, and CSS it references are compiled); `public/` is always served raw. Use `myslop.json` for organizational policy and capabilities that source layout cannot reveal:
 
 ```json
 {
@@ -75,7 +76,7 @@ interface Env {
 
 Removing a capability from a later deployment detaches its binding immediately and starts a seven-day recovery period. Re-adding it cancels deletion. An hourly control-plane sweep removes expired D1/R2 resources; the owner can remove them immediately with `prune`.
 
-Verified user identity and effective app role are injected into non-public app requests as `x-myslop-user-id`, `x-myslop-user-email`, `x-myslop-user-name`, and `x-myslop-app-role`. Client-supplied versions of all `x-myslop-*` headers are stripped by the dispatcher. Public apps keep their own cookies and bearer-token authentication and receive no synthesized platform identity.
+Verified user identity and effective app role are injected into authenticated app requests as `x-myslop-user-id`, `x-myslop-user-email`, `x-myslop-user-name`, and `x-myslop-app-role`. Client-supplied versions of all `x-myslop-*` headers are stripped by the dispatcher. Platform agent tokens (`Authorization: Bearer msa_...`) authenticate directly against app hostnames: the dispatcher verifies the token, injects the same identity headers, and never forwards the bearer to app code. Public apps keep their own cookies and bearer-token authentication; anonymous public requests receive no synthesized identity, while token- or session-authenticated ones do (cookie identity is dropped on cross-origin mutations rather than rejected).
 
 ## Local checks
 

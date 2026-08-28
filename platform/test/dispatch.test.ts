@@ -40,7 +40,7 @@ const user: User = {
 };
 
 describe("app request trust models", () => {
-  test("public apps keep their own credentials but never receive the platform session", () => {
+  test("anonymous public requests keep their own credentials and receive no identity", () => {
     const headers = appRequestHeaders(new Request("https://demo.myslop.app/api", {
       headers: {
         authorization: "Bearer msf_existing",
@@ -49,7 +49,7 @@ describe("app request trust models", () => {
         "x-myslop-app-role": "owner",
         "x-myslop-internal-signature": "spoofed",
       },
-    }), app("public"), user);
+    }), app("public"), null);
     expect(headers.get("authorization")).toBe("Bearer msf_existing");
     expect(headers.get("cookie")).toBe("sid=existing");
     expect(headers.get("x-myslop-user-id")).toBeNull();
@@ -61,6 +61,31 @@ describe("app request trust models", () => {
       headers: { authorization: "Bearer msa_platform-secret" },
     }), app("public"), null);
     expect(platformBearer.get("authorization")).toBeNull();
+  });
+
+  test("verified users on public apps get injected identity without losing app credentials", () => {
+    const headers = appRequestHeaders(new Request("https://demo.myslop.app/api", {
+      headers: {
+        authorization: "Bearer msf_existing",
+        cookie: "sid=existing; __Host-msa_sid=platform-secret",
+        "x-myslop-user-id": "spoofed",
+      },
+    }), app("public"), user, "viewer");
+    expect(headers.get("authorization")).toBe("Bearer msf_existing");
+    expect(headers.get("cookie")).toBe("sid=existing");
+    expect(headers.get("x-myslop-app-id")).toBe("app-id");
+    expect(headers.get("x-myslop-user-id")).toBe("user-id");
+    expect(headers.get("x-myslop-user-email")).toBe("user@example.com");
+    expect(headers.get("x-myslop-app-role")).toBe("viewer");
+  });
+
+  test("platform bearer tokens are consumed by the dispatcher, never forwarded", () => {
+    const headers = appRequestHeaders(new Request("https://demo.myslop.app/api", {
+      headers: { authorization: "Bearer msa_agent-token" },
+    }), app("public"), user, "editor");
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("x-myslop-user-id")).toBe("user-id");
+    expect(headers.get("x-myslop-app-role")).toBe("editor");
   });
 
   test("team apps strip client credentials and inject verified platform identity", () => {

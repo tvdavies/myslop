@@ -75,6 +75,7 @@ import {
   type ResolvedManifest,
 } from "./manifest";
 import { activeTeamsFor, handleOrganizationApi } from "./organization";
+import { diffSchema, parseSchemaSql } from "./schema-diff";
 import { buildResourceTopology } from "./resources";
 import { canReconcileApps, hasActiveDomain, reconciliationDeploymentChanged } from "./reconcile";
 import { acceptEmail, dispatchDueSchedules, reconcileAppSchedules, retryEmailDeliveries } from "./runtime";
@@ -122,6 +123,7 @@ interface DeployInput {
   manifest?: unknown;
   worker?: string;
   assets?: AssetInput[];
+  schema?: string;
   migrations?: MigrationInput[];
 }
 
@@ -419,8 +421,9 @@ export async function removeFileStorage(env: Env, app: AppRow): Promise<void> {
   ).bind(app.id, app.r2_bucket).run();
 }
 
-async function applyMigrations(env: Env, app: AppRow, version: number, migrations: MigrationInput[]) {
+async function applyMigrations(env: Env, app: AppRow, version: number, migrations: MigrationInput[]): Promise<number> {
   if (!app.d1_id) throw new Error("database not provisioned");
+  let applied = 0;
   await runD1Sql(env, app.d1_id, `CREATE TABLE IF NOT EXISTS _myslop_migrations (
     name TEXT PRIMARY KEY,
     hash TEXT NOT NULL,
@@ -452,12 +455,55 @@ async function applyMigrations(env: Env, app: AppRow, version: number, migration
         { sql },
         { sql: "INSERT INTO _myslop_migrations (name,hash,applied_at) VALUES (?,?,?)", params: [migration.name, hash, appliedAt] },
       ]);
+      applied++;
     }
     await env.CONTROL_DB.prepare(
       `INSERT INTO app_migrations (app_id,name,hash,version,applied_at) VALUES (?,?,?,?,?)
        ON CONFLICT(app_id,name) DO UPDATE SET hash=excluded.hash,version=excluded.version,applied_at=excluded.applied_at`,
     ).bind(app.id, migration.name, hash, version, Date.now()).run();
   }
+  return applied;
+}
+
+// Applies a declarative schema.sql to the app database. The last-applied
+// schema is stored inside the app database itself, so a recreated or adopted
+// database naturally starts from an empty baseline. Additive diffs run as
+// generated DDL; destructive diffs fail the deployment unless a new migration
+// in the same deployment performed the change.
+export async function applySchema(env: Env, app: AppRow, desiredSql: string, migrationsJustApplied: boolean): Promise<void> {
+  if (!app.d1_id) throw new Error("database not provisioned");
+  const desiredHash = await sha256Hex(desiredSql);
+  await runD1Sql(env, app.d1_id, `CREATE TABLE IF NOT EXISTS _myslop_schema (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    sql TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    applied_at INTEGER NOT NULL
+  )`);
+  const [baseline] = await queryD1<{ sql: string; hash: string }>(
+    env,
+    app.d1_id,
+    "SELECT sql,hash FROM _myslop_schema WHERE id=1",
+  );
+  if (baseline?.hash === desiredHash) return;
+  const diff = diffSchema(parseSchemaSql(baseline?.sql ?? ""), parseSchemaSql(desiredSql));
+  if (diff.destructive.length && !migrationsJustApplied) {
+    throw new Error(
+      `schema.sql contains destructive changes: ${diff.destructive.join("; ")}. ` +
+      "Write a forward migration in migrations/ that performs this change and deploy it together with the updated schema.sql.",
+    );
+  }
+  for (const statement of diff.statements) {
+    try {
+      await runD1Sql(env, app.d1_id, statement);
+    } catch (error) {
+      if (!/duplicate column/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
+  }
+  await runD1Batch(env, app.d1_id, [{
+    sql: `INSERT INTO _myslop_schema (id,sql,hash,applied_at) VALUES (1,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET sql=excluded.sql,hash=excluded.hash,applied_at=excluded.applied_at`,
+    params: [desiredSql, desiredHash, Date.now()],
+  }]);
 }
 
 async function withAppOperationLock(
@@ -516,6 +562,17 @@ async function handleDeployLocked(req: Request, env: Env, principal: Principal, 
   if (migrations.length && !manifest.capabilities.database) {
     return json({ error: "migrations require the database capability" }, 400);
   }
+  if (body.schema !== undefined) {
+    if (typeof body.schema !== "string" || !body.schema.trim() || body.schema.length > 500_000) {
+      return json({ error: "invalid schema.sql" }, 400);
+    }
+    try {
+      parseSchemaSql(body.schema);
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : "invalid schema.sql" }, 400);
+    }
+    if (!manifest.capabilities.database) return json({ error: "schema.sql requires the database capability" }, 400);
+  }
   if (!assets.length && !body.worker) return json({ error: "deployment needs assets or a Worker" }, 400);
   if (body.worker && body.worker.length > 2_000_000) return json({ error: "worker exceeds 2 MB" }, 413);
   if (manifest.capabilities.secrets.length) {
@@ -569,7 +626,8 @@ async function handleDeployLocked(req: Request, env: Env, principal: Principal, 
 
   try {
     const runtimeApp = await ensureCapabilities(env, app, manifest);
-    if (migrations.length) await applyMigrations(env, runtimeApp, version, migrations);
+    const appliedMigrations = migrations.length ? await applyMigrations(env, runtimeApp, version, migrations) : 0;
+    if (body.schema) await applySchema(env, runtimeApp, body.schema, appliedMigrations > 0);
     await Promise.all(decoded.map((asset) => env.ASSETS.put(`${prefix}/${asset.path}`, asset.bytes, {
       httpMetadata: { contentType: asset.type },
     })));
@@ -1581,6 +1639,23 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
     if (!permissions.modifySecrets) return json({ error: "editor access required" }, 403);
     return handleSetSecret(req, env, principal, app, decodeURIComponent(tail.slice("secrets/".length)));
   }
+  // Editors can inspect app data without deploying debug code. Works for
+  // git-managed apps too: it reads operational state, not managed policy.
+  if (tail === "db" && req.method === "POST") {
+    if (!permissions.modifySecrets) return json({ error: "editor access required" }, 403);
+    if (!app.d1_id) return json({ error: "app has no database" }, 404);
+    const body = await req.json().catch(() => null) as { sql?: string; params?: unknown[] } | null;
+    const sql = String(body?.sql ?? "").trim();
+    if (!sql || sql.length > 10_000) return json({ error: "sql is required (max 10 KB)" }, 400);
+    const params = Array.isArray(body?.params) ? body.params : [];
+    try {
+      const results = await queryD1(env, app.d1_id, sql, params);
+      await audit(env, { actorId: principal.user.id, teamId: app.team_id, appId: app.id, action: "app.db.queried", detail: { sql: sql.slice(0, 200) } });
+      return json({ results });
+    } catch (error) {
+      return json({ error: `query failed: ${error instanceof Error ? error.message : error}` }, 502);
+    }
+  }
   if (app.managed_by === "git" && req.method !== "GET") {
     return json({ error: "app is managed by git; update its myslop.json and run reconciliation" }, 409);
   }
@@ -1727,19 +1802,17 @@ export function appRequestHeaders(req: Request, app: AppRow, user: User | null, 
     if (cookies.length) headers.set("cookie", cookies.join("; "));
     else headers.delete("cookie");
   }
-  if (app.visibility !== "public") {
-    headers.set("x-myslop-app-id", app.id);
-    if (user) {
-      headers.set("x-myslop-user-id", user.id);
-      if (user.email) headers.set("x-myslop-user-email", user.email);
-      if (user.name) headers.set("x-myslop-user-name", user.name);
-      if (role) headers.set("x-myslop-app-role", role);
-    }
+  if (app.visibility !== "public" || user) headers.set("x-myslop-app-id", app.id);
+  if (user) {
+    headers.set("x-myslop-user-id", user.id);
+    if (user.email) headers.set("x-myslop-user-email", user.email);
+    if (user.name) headers.set("x-myslop-user-name", user.name);
+    if (role) headers.set("x-myslop-app-role", role);
   }
   return headers;
 }
 
-async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Response> {
+async function handleAppRequest(req: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
   if (url.pathname === "/__email" || url.pathname === "/__scheduled") return new Response("not found\n", { status: 404 });
   const app = await appForHostname(env, url.hostname);
   if (!app || !app.active_version) return new Response("app not found\n", { status: 404 });
@@ -1757,7 +1830,33 @@ async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Respo
     });
   }
   if (url.pathname.startsWith("/__myslop/")) return new Response("not found\n", { status: 404 });
-  const user = app.visibility === "public" ? null : await getSessionUser(req, env);
+  // Platform agent tokens authenticate directly against app hostnames. The
+  // dispatcher verifies the token, then injects the same identity headers a
+  // browser session gets; the bearer itself never reaches the app Worker.
+  let tokenPrincipal: Principal | null = null;
+  if (/^Bearer\s+msa_/i.test(req.headers.get("authorization") ?? "")) {
+    tokenPrincipal = await authenticate(req, env);
+    if (
+      !tokenPrincipal ||
+      (tokenPrincipal.appId && tokenPrincipal.appId !== app.id) ||
+      (tokenPrincipal.teamId && tokenPrincipal.teamId !== app.team_id)
+    ) {
+      return json({ error: "invalid or out-of-scope platform token" }, 401);
+    }
+    if (tokenPrincipal.tokenId) {
+      ctx.waitUntil(
+        env.CONTROL_DB.prepare("UPDATE tokens SET last_used_at=? WHERE id=?")
+          .bind(Date.now(), tokenPrincipal.tokenId).run(),
+      );
+    }
+  }
+  let user = tokenPrincipal?.user ?? await getSessionUser(req, env);
+  // Cookie identity on a public app is advisory: a cross-origin mutation keeps
+  // working (webhooks, curl) but loses the injected identity instead of failing.
+  if (app.visibility === "public" && user && !tokenPrincipal && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+    const origin = req.headers.get("origin");
+    if (origin !== null && origin !== url.origin) user = null;
+  }
   const role = await effectiveAppRole(env, app, user);
   if (!role) {
     const wantsJson = req.headers.get("accept")?.includes("application/json") || req.headers.has("authorization");
@@ -1765,7 +1864,7 @@ async function handleAppRequest(req: Request, env: Env, url: URL): Promise<Respo
     const returnTo = encodeURIComponent(url.toString());
     return Response.redirect(`${PLATFORM_ORIGIN}/?returnTo=${returnTo}`, 302);
   }
-  if (app.visibility !== "public" && user && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+  if (app.visibility !== "public" && user && !tokenPrincipal && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
     const origin = req.headers.get("origin");
     if (origin !== url.origin) return new Response("bad origin\n", { status: 403 });
   }
@@ -1836,7 +1935,7 @@ export default {
       target.search = url.search;
       return Response.redirect(target.toString(), 308);
     }
-    if (url.hostname !== PLATFORM_HOST && !localPlatform) return handleAppRequest(req, env, url);
+    if (url.hostname !== PLATFORM_HOST && !localPlatform) return handleAppRequest(req, env, url, ctx);
     if (url.pathname.startsWith("/api/")) return handleApi(req, env, url, ctx);
     if (url.pathname === "/skill.md") {
       return new Response(skillMd, { headers: { "content-type": "text/markdown; charset=utf-8" } });

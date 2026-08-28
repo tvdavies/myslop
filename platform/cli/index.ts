@@ -58,6 +58,7 @@ function usage(): never {
   create <slug> [name] [--visibility private|team|public]
   update <slug> [--name <name>] [--description <text>] [--visibility private|team|public]
   deploy <slug> [directory]
+  db <slug> "<sql>"
   secret <slug> <BINDING_NAME>
   rollback <slug> <version>
   prune <slug> --confirm <slug>
@@ -116,18 +117,18 @@ if (command === "apps") {
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
-  const { manifest, assets, worker, migrations } = artifact.deployment;
+  const { manifest, assets, worker, schema, migrations } = artifact.deployment;
   const detected = [
     assets.length ? `${assets.length} assets` : null,
     worker ? "Worker" : null,
-    manifest.capabilities.database ? `database${migrations.length ? ` (${migrations.length} migrations)` : ""}` : null,
+    manifest.capabilities.database ? `database${schema ? " (declarative schema)" : ""}${migrations.length ? ` (${migrations.length} migrations)` : ""}` : null,
     manifest.capabilities.files ? "file storage" : null,
     manifest.capabilities.secrets.length ? `secrets: ${manifest.capabilities.secrets.join(", ")}` : null,
   ].filter(Boolean).join(", ");
   console.error(`Resolved capabilities: ${detected}`);
   const { deployment } = await api<{ deployment: { version: number; url: string } }>(`/api/apps/${app.id}/deployments`, {
     method: "POST",
-    body: JSON.stringify({ manifest, assets, worker, migrations }),
+    body: JSON.stringify({ manifest, assets, worker, schema, migrations }),
   });
   console.log(`Deployed v${deployment.version}\n${deployment.url}`);
 } else if (command === "rollback") {
@@ -154,6 +155,16 @@ if (command === "apps") {
   const app = await findApp(slug);
   await api(`/api/apps/${app.id}`, { method: "DELETE", body: JSON.stringify({ confirm: slug }) });
   console.log(`Deleted ${slug} and its Cloudflare resources`);
+} else if (command === "db") {
+  const [slug, ...sqlParts] = args;
+  const sql = sqlParts.join(" ").trim();
+  if (!slug || !sql) usage();
+  const app = await findApp(slug);
+  const { results } = await api<{ results: unknown[] }>(`/api/apps/${app.id}/db`, {
+    method: "POST",
+    body: JSON.stringify({ sql }),
+  });
+  console.log(JSON.stringify(results, null, 2));
 } else if (command === "secret") {
   const [slug, name] = args;
   if (!slug || !name) usage();
