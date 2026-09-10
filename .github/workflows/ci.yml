@@ -22,7 +22,9 @@ jobs:
           bun-version: 1.3.13
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: bunx playwright install --with-deps chromium
+      - name: Install the lockfile-pinned Playwright browser
+        working-directory: platform
+        run: bun ./node_modules/@playwright/test/cli.js install --with-deps chromium
       - run: bun run --cwd platform test:browser
       - run: bun run --cwd apps/plans test:browser
       - name: Verify generated files
