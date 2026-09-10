@@ -1,30 +1,12 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import worker from "../src/index";
 import { renderPlan } from "../src/markdown";
 
-// --- D1 shim over bun:sqlite ---
+import { d1 } from "./d1";
+import { AUTHOR_PERMISSIONS, PERMISSION_PRESETS } from "../src/permissions";
 
-function d1(db: Database) {
-  return {
-    prepare(sql: string) {
-      let values: unknown[] = [];
-      const stmt = {
-        bind(...bound: unknown[]) {
-          values = bound;
-          return stmt;
-        },
-        first: async <T>() => (db.query(sql).get(...(values as never[])) as T | null) ?? null,
-        all: async <T>() => ({ results: db.query(sql).all(...(values as never[])) as T[] }),
-        run: async () => {
-          const result = db.query(sql).run(...(values as never[]));
-          return { success: true, meta: { changes: result.changes } };
-        },
-      };
-      return stmt;
-    },
-  };
-}
+afterEach(() => db?.close());
 
 function context() {
   return { waitUntil() {}, passThroughOnException() {}, props: {} } as unknown as ExecutionContext;
@@ -49,6 +31,7 @@ const REVIEWER2_SID = "c".repeat(32);
 
 beforeEach(async () => {
   db = new Database(":memory:");
+  db.exec("PRAGMA foreign_keys = ON");
   db.exec(await Bun.file(new URL("../schema.sql", import.meta.url)).text());
   env = { DB: d1(db) };
 
@@ -79,10 +62,12 @@ async function call(
     sid?: string;
     body?: unknown;
     identity?: { id: string; email?: string; name?: string };
+    origin?: string;
   } = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {};
-  if (opts.token) headers.authorization = `Bearer ${opts.token}`;
+  if (opts.token !== undefined) headers.authorization = `Bearer ${opts.token}`;
+  if (opts.origin) headers.origin = opts.origin;
   if (opts.identity) {
     headers["x-myslop-user-id"] = opts.identity.id;
     if (opts.identity.email) headers["x-myslop-user-email"] = opts.identity.email;
@@ -218,6 +203,293 @@ describe("agent API", () => {
     const v1 = db.query("SELECT markdown FROM plan_versions WHERE plan_id=? AND version=1").get(created.id) as { markdown: string };
     expect(v1.markdown).toBe(PLAN_MD);
   });
+});
+
+async function mintKey(permissions: string[], name = "Oracle") {
+  const response = await call("POST", "/api/tokens", { sid: OWNER_SID, body: { name, permissions } });
+  expect(response.status).toBe(201);
+  return ((await response.json()) as { token: { id: string; secret: string; permissions: string[] } }).token;
+}
+
+async function grantExistingReview() {
+  const response = await call("PATCH", "/api/tokens/tok1", {
+    sid: OWNER_SID, body: { permissions: [...AUTHOR_PERMISSIONS, "plans:review"] },
+  });
+  expect(response.status).toBe(200);
+}
+
+describe("key permissions", () => {
+  test("existing credentials keep author access and can be upgraded in place without rotation", async () => {
+    const plan = await createPlan();
+    const original = db.query("SELECT id, hash, prefix, created_at FROM tokens WHERE id='tok1'").get();
+    const initial = await call("GET", "/api/verify", { token: OWNER_TOKEN });
+    expect(await initial.json()).toMatchObject({ token: { id: "tok1", name: "claude" }, permissions: AUTHOR_PERMISSIONS });
+    expect((await call("POST", `/api/agent/plans/${plan.id}/review`, {
+      token: OWNER_TOKEN, body: { version: 1, verdict: "approved" },
+    })).status).toBe(403);
+    await grantExistingReview();
+    expect(db.query("SELECT id, hash, prefix, created_at FROM tokens WHERE id='tok1'").get()).toEqual(original);
+    expect((await call("POST", `/api/agent/plans/${plan.id}/review`, {
+      token: OWNER_TOKEN, body: { version: 1, verdict: "approved" },
+    })).status).toBe(200);
+    expect((await call("PUT", `/api/agent/plans/${plan.id}`, {
+      token: OWNER_TOKEN, body: { markdown: "# Still an author" },
+    })).status).toBe(200);
+    const list = await (await call("GET", "/api/tokens", { sid: OWNER_SID })).json() as {
+      tokens: { id: string; permissions: string[] }[]; permission_presets: unknown;
+    };
+    expect(list.tokens.find((t) => t.id === "tok1")!.permissions).toContain("plans:review");
+    expect(list.permission_presets).toEqual(PERMISSION_PRESETS);
+    expect(JSON.stringify(list)).not.toContain(OWNER_TOKEN);
+    expect(JSON.stringify(list)).not.toContain("hash");
+  });
+
+  test("omitted permissions keep setup and old token-creation clients author-only", async () => {
+    const response = await call("POST", "/api/tokens", { sid: OWNER_SID, body: { name: "cli" } });
+    expect(response.status).toBe(201);
+    const { token } = await response.json() as { token: { permissions: string[]; secret: string } };
+    expect(token.permissions).toEqual(AUTHOR_PERMISSIONS);
+    const verify = await call("GET", "/api/verify", { token: token.secret });
+    expect(await verify.json()).toMatchObject({ permissions: AUTHOR_PERMISSIONS });
+  });
+
+  test("validates creation and updates without silently granting defaults", async () => {
+    for (const permissions of [null, "plans:review", {}, ["*"], ["plans:delete"], ["plans:read", 1]]) {
+      expect((await call("POST", "/api/tokens", { sid: OWNER_SID, body: { permissions } })).status).toBe(400);
+      expect((await call("PATCH", "/api/tokens/tok1", { sid: OWNER_SID, body: { permissions } })).status).toBe(400);
+    }
+    expect((await call("PATCH", "/api/tokens/tok1", { sid: OWNER_SID, body: {} })).status).toBe(400);
+    const key = await mintKey([]);
+    expect((await call("GET", "/api/agent/plans", { token: key.secret })).status).toBe(403);
+    expect(await (await call("GET", "/api/verify", { token: key.secret })).json()).toMatchObject({ permissions: [] });
+    const duplicate = await mintKey(["plans:review", "plans:read", "plans:read"]);
+    expect(duplicate.permissions).toEqual(["plans:read", "plans:review"]);
+    db.query("UPDATE tokens SET permissions='invalid JSON' WHERE id=?").run(duplicate.id);
+    expect((await call("GET", "/api/agent/plans", { token: duplicate.secret })).status).toBe(403);
+  });
+
+  for (const granted of ["plans:read", "plans:write", "plans:comment", "plans:resolve", "plans:review"]) {
+    test(`enforces ${granted} independently on every agent action`, async () => {
+      const plan = await createPlan();
+      const comment = await (await call("POST", `/api/plans/${plan.id}/comments`, {
+        sid: OWNER_SID, body: { body: "A thread", version: 1 },
+      })).json() as { id: string };
+      const key = await mintKey([granted]);
+      const base = `/api/agent/plans/${plan.id}`;
+      const routes = [
+        { method: "GET", path: "/api/agent/plans", permission: "plans:read", status: 200 },
+        { method: "POST", path: "/api/agent/plans", permission: "plans:write", body: { title: "New", markdown: "# New" }, status: 201 },
+        { method: "GET", path: base, permission: "plans:read", status: 200 },
+        { method: "PUT", path: base, permission: "plans:write", body: { markdown: "# Revision" }, status: 200 },
+        { method: "GET", path: `${base}/comments`, permission: "plans:read", status: 200 },
+        { method: "POST", path: `${base}/comments`, permission: "plans:comment", body: { body: "Feedback" }, status: 201 },
+        { method: "POST", path: `${base}/comments/${comment.id}/resolve`, permission: "plans:resolve", body: {}, status: 200 },
+        { method: "POST", path: `${base}/review`, permission: "plans:review", body: { version: 1, verdict: "approved" }, status: 200 },
+      ];
+      for (const route of routes) {
+        const res = await call(route.method, route.path, { token: key.secret, body: route.body });
+        expect(res.status).toBe(route.permission === granted ? route.status : 403);
+        if (route.permission !== granted) expect(await res.json()).toMatchObject({ required_permission: route.permission });
+      }
+      expect((await call("DELETE", base, { token: key.secret })).status).toBe(404);
+      expect((await call("POST", `${base}/review/extra`, { token: key.secret })).status).toBe(404);
+      expect((await call("GET", "/api/agent/plans-suffix", { token: key.secret })).status).toBe(401);
+    });
+  }
+
+  test("keys cannot mint, grant, revoke or use a session to bypass their permissions", async () => {
+    const plan = await createPlan();
+    for (const sid of [undefined, OWNER_SID]) {
+      for (const [method, path] of [["GET", "/api/tokens"], ["POST", "/api/tokens"], ["PATCH", "/api/tokens/tok1"], ["DELETE", "/api/tokens/tok1"], ["POST", `/api/plans/${plan.id}/review`]]) {
+        expect((await call(method!, path!, {
+          token: OWNER_TOKEN, sid, body: method === "GET" ? undefined : { permissions: ["plans:review"], verdict: "approved", version: 1 },
+        })).status).toBe(401);
+      }
+    }
+    expect((await call("PATCH", "/api/tokens/tok1", {
+      sid: REVIEWER_SID, body: { permissions: ["plans:review"] },
+    })).status).toBe(404);
+    expect((await call("PATCH", "/api/tokens/tok1", {
+      sid: OWNER_SID, origin: "https://other.example", body: { permissions: ["plans:review"] },
+    })).status).toBe(403);
+    expect((await call("POST", "/api/tokens", {
+      sid: OWNER_SID, origin: "https://other.example", body: { permissions: ["plans:review"] },
+    })).status).toBe(403);
+  });
+
+  test("app bearers win over platform identities; identity alone never grants review", async () => {
+    const plan = await createPlan();
+    const key = await mintKey(["plans:read"]);
+    const identity = { id: "plat-owner", email: "owner@example.com", name: "Owner" };
+    expect((await call("POST", "/api/agent/plans", {
+      token: key.secret, identity, body: { title: "No escalation", markdown: "# No" },
+    })).status).toBe(403);
+    for (const token of ["msp_invalid", "wrong-format", "", STRANGER_TOKEN]) {
+      expect((await call("GET", `/api/agent/plans/${plan.id}`, { token, identity })).status).toBe(token === STRANGER_TOKEN ? 404 : 401);
+    }
+    await grantExistingReview();
+    expect((await call("POST", `/api/agent/plans/${plan.id}/review`, {
+      identity, body: { version: 1, verdict: "approved" },
+    })).status).toBe(403); // Not upgraded just because another key of the user was.
+    expect((await call("POST", `/api/agent/plans/${plan.id}/review`, {
+      token: OWNER_TOKEN, identity, body: { version: 1, verdict: "approved" },
+    })).status).toBe(200);
+  });
+
+  test("downgrades and revocation affect the next request without rotating secrets", async () => {
+    const plan = await createPlan();
+    const key = await mintKey(PERMISSION_PRESETS.oracle!);
+    const review = () => call("POST", `/api/agent/plans/${plan.id}/review`, {
+      token: key.secret, body: { version: 1, verdict: "approved" },
+    });
+    expect((await review()).status).toBe(200);
+    await call("PATCH", `/api/tokens/${key.id}`, { sid: OWNER_SID, body: { permissions: ["plans:read"] } });
+    expect((await review()).status).toBe(403);
+    await call("DELETE", `/api/tokens/${key.id}`, { sid: OWNER_SID });
+    expect((await review()).status).toBe(401);
+    expect((await call("GET", "/api/agent/plans", {
+      token: key.secret, identity: { id: "owner-user" },
+    })).status).toBe(401);
+    expect((await call("PATCH", `/api/tokens/${key.id}`, {
+      sid: OWNER_SID, body: { permissions: ["plans:review"] },
+    })).status).toBe(404);
+    expect(db.query("SELECT verdict FROM agent_reviews WHERE token_id=?").get(key.id)).toEqual({ verdict: "approved" });
+  });
+});
+
+describe("agent review flow", () => {
+  test("Oracle reviews another key's plan, requests changes, then approves the revised version", async () => {
+    const plan = await createPlan();
+    const key = await mintKey(PERMISSION_PRESETS.oracle!);
+    const feedback = await call("POST", `/api/agent/plans/${plan.id}/comments`, {
+      token: key.secret, body: { body: "Add a rollback section." },
+    });
+    expect(feedback.status).toBe(201);
+    const { id: commentId } = await feedback.json() as { id: string };
+    let response = await call("POST", `/api/agent/plans/${plan.id}/review`, {
+      token: key.secret, body: { version: 1, verdict: "changes_requested", note: "  Needs rollback  " },
+    });
+    expect(await response.json()).toMatchObject({ ok: true, version: 1, current_version: 1, status: "changes_requested" });
+    await call("POST", `/api/agent/plans/${plan.id}/comments/${commentId}/resolve`, { token: OWNER_TOKEN, body: {} });
+    let status = await (await call("GET", `/api/agent/plans/${plan.id}`, { token: OWNER_TOKEN })).json() as { status: string };
+    expect(status.status).toBe("changes_requested"); // Resolving is not approval.
+    response = await call("PUT", `/api/agent/plans/${plan.id}`, {
+      token: OWNER_TOKEN, body: { markdown: "# Rollout\n\n## Rollback\n\nRestore the previous release." },
+    });
+    expect(await response.json()).toMatchObject({ version: 2, status: "open" });
+    response = await call("POST", `/api/agent/plans/${plan.id}/review`, {
+      token: key.secret, body: { version: 2, verdict: "approved", note: "Ready" },
+    });
+    expect(await response.json()).toMatchObject({ status: "approved", version: 2 });
+    expect(db.query("SELECT version, verdict, note FROM agent_reviews ORDER BY version").all()).toEqual([
+      { version: 1, verdict: "changes_requested", note: "Needs rollback" },
+      { version: 2, verdict: "approved", note: "Ready" },
+    ]);
+    for (const [path, opts] of [["/api/agent/plans", { token: OWNER_TOKEN }], ["/api/plans", { sid: OWNER_SID }]] as const) {
+      const list = await (await call("GET", path, opts)).json() as { plans: { status: string }[] };
+      expect(list.plans[0]!.status).toBe("approved");
+    }
+    const raw = await (await call("GET", `/p/${plan.id}/md`)).text();
+    expect(raw).toContain("status: approved");
+    expect(raw).toContain("Agent · Oracle: approved — Ready");
+    const viewer = await (await call("GET", `/api/plans/${plan.id}`, { sid: OWNER_SID })).json() as {
+      plan: { status: string }; reviews: { author: { type: string; id: string }; mine: boolean }[]; my_review: unknown;
+    };
+    expect(viewer.plan.status).toBe("approved");
+    expect(viewer.reviews[1]).toMatchObject({ author: { type: "agent", id: key.id }, mine: false });
+    expect(viewer.my_review).toBeNull();
+  });
+
+  test("two agent keys and their human owner keep independent verdicts", async () => {
+    const plan = await createPlan();
+    await grantExistingReview();
+    const second = await mintKey(PERMISSION_PRESETS.oracle!, "Second oracle");
+    await call("POST", `/api/plans/${plan.id}/review`, { sid: OWNER_SID, body: { version: 1, verdict: "changes_requested" } });
+    for (const token of [OWNER_TOKEN, second.secret, OWNER_TOKEN]) {
+      const res = await call("POST", `/api/agent/plans/${plan.id}/review`, { token, body: { version: 1, verdict: "approved" } });
+      expect(await res.json()).toMatchObject({ status: "changes_requested" });
+    }
+    const viewer = await (await call("GET", `/api/plans/${plan.id}`, { sid: OWNER_SID })).json() as {
+      reviews: { author: { type: string }; mine: boolean }[]; my_review: { verdict: string };
+    };
+    expect(viewer.reviews).toHaveLength(3);
+    expect(viewer.reviews.filter((r) => r.mine)).toHaveLength(1);
+    expect(viewer.my_review.verdict).toBe("changes_requested");
+    expect(viewer.reviews.filter((r) => r.author.type === "agent")).toHaveLength(2);
+    await call("POST", `/api/plans/${plan.id}/review`, { sid: OWNER_SID, body: { version: 1, verdict: "approved" } });
+    const changed = await call("POST", `/api/agent/plans/${plan.id}/review`, {
+      token: second.secret, body: { version: 1, verdict: "changes_requested" },
+    });
+    expect(await changed.json()).toMatchObject({ status: "changes_requested" });
+    expect(db.query("SELECT COUNT(*) n FROM agent_reviews").get()).toEqual({ n: 2 });
+    expect((await call("DELETE", `/api/plans/${plan.id}`, { sid: OWNER_SID })).status).toBe(200);
+    expect(db.query("SELECT COUNT(*) n FROM agent_reviews").get()).toEqual({ n: 0 });
+  });
+
+  test("review authority does not grant access to another account's plans or comments", async () => {
+    const plan = await createPlan();
+    db.query("UPDATE tokens SET permissions=? WHERE id='tok2'").run(JSON.stringify([...AUTHOR_PERMISSIONS, "plans:review"]));
+    for (const [method, path, body] of [
+      ["GET", `/api/agent/plans/${plan.id}`, undefined],
+      ["GET", `/api/agent/plans/${plan.id}/comments`, undefined],
+      ["POST", `/api/agent/plans/${plan.id}/comments`, { body: "No" }],
+      ["POST", `/api/agent/plans/${plan.id}/review`, { version: 1, verdict: "approved" }],
+      ["PUT", `/api/agent/plans/${plan.id}`, { markdown: "# No" }],
+    ] as const) {
+      expect((await call(method, path, { token: STRANGER_TOKEN, body })).status).toBe(404);
+    }
+    const list = await call("GET", "/api/agent/plans", { token: STRANGER_TOKEN });
+    expect(await list.json() as { plans: unknown[] }).toEqual({ plans: [] });
+  });
+
+  test("requires a valid verdict and explicit integer version, and rejects stale/future versions", async () => {
+    const plan = await createPlan();
+    await grantExistingReview();
+    for (const version of [undefined, null, "1", true, 1.5, 0, -1, {}, []]) {
+      expect((await call("POST", `/api/agent/plans/${plan.id}/review`, {
+        token: OWNER_TOKEN, body: { version, verdict: "approved" },
+      })).status).toBe(400);
+    }
+    expect((await call("POST", `/api/agent/plans/${plan.id}/review`, {
+      token: OWNER_TOKEN, body: { version: 1, verdict: "approve" },
+    })).status).toBe(400);
+    expect((await call("POST", `/api/agent/plans/${plan.id}/review`, {
+      token: OWNER_TOKEN, body: { version: 2, verdict: "approved" },
+    })).status).toBe(409);
+    await call("PUT", `/api/agent/plans/${plan.id}`, { token: OWNER_TOKEN, body: { markdown: "# v2" } });
+    const stale = await call("POST", `/api/agent/plans/${plan.id}/review`, {
+      token: OWNER_TOKEN, body: { version: 1, verdict: "approved" },
+    });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ current_version: 2 });
+    expect(db.query("SELECT COUNT(*) n FROM agent_reviews").get()).toEqual({ n: 0 });
+  });
+
+  for (const type of ["user", "agent"] as const) {
+    for (const timing of ["beforeRun", "afterRun"] as const) {
+      test(`${type} review handles a concurrent revision ${timing}`, async () => {
+        const plan = await createPlan();
+        await grantExistingReview();
+        const table = type === "agent" ? "agent_reviews" : "reviews";
+        let armed = true;
+        env.DB = d1(db, { [timing]: (sql: string) => {
+          if (!armed || !sql.includes(`INSERT INTO ${table} (`)) return;
+          armed = false;
+          db.query("INSERT INTO plan_versions (plan_id,version,title,markdown,created_at) VALUES (?,2,'New','# New',?)").run(plan.id, Date.now());
+          db.query("UPDATE plans SET current_version=2 WHERE id=?").run(plan.id);
+        } });
+        const response = await call("POST", `/api/${type === "agent" ? "agent/" : ""}plans/${plan.id}/review`, {
+          ...(type === "agent" ? { token: OWNER_TOKEN } : { sid: OWNER_SID }),
+          body: { version: 1, verdict: "approved" },
+        });
+        expect(response.status).toBe(timing === "beforeRun" ? 409 : 200);
+        expect(await response.json()).toMatchObject({ current_version: 2, ...(timing === "afterRun" ? { version: 1, status: "open" } : {}) });
+        expect(db.query(`SELECT COUNT(*) n FROM ${table}`).get()).toEqual({ n: timing === "beforeRun" ? 0 : 1 });
+        const status = await (await call("GET", `/api/agent/plans/${plan.id}`, { token: OWNER_TOKEN })).json() as { status: string };
+        expect(status.status).toBe("open");
+      });
+    }
+  }
 });
 
 describe("review flow", () => {

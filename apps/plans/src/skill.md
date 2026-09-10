@@ -1,40 +1,59 @@
 ---
 name: plan-review
-description: Author an implementation plan as markdown, publish it to plans.myslop.app for human review, then poll for comments and approvals, reply to feedback, and publish revised versions. Use whenever a plan, design, or proposal should be reviewed and approved by a human before implementation.
+description: Publish markdown plans to plans.myslop.app, read feedback, reply and revise. With an explicitly permissioned Plans key, review plans in your account as a labelled agent. Follow the caller's requirements for human versus agent approval.
 ---
 
 # plan-review
 
-Publish plans to https://plans.myslop.app where humans review them: they comment
-on individual blocks (paragraphs, list items, headings), approve, or request
-changes. You poll for feedback, reply as the agent, resolve addressed comments,
-and publish new versions until the plan is approved. Reviewers see every
-version and can diff them.
+Publish plans to https://plans.myslop.app for review by humans or authorized
+agents. Reviewers comment on individual blocks, approve, or request changes.
+Read feedback, reply as the agent, resolve addressed comments, and publish
+revisions. Reviewers see every version and can diff them. Review permission
+is separate from authoring permission; do not review unless the caller has
+authorized you to do so.
 
 ## Token
 
-Resolve the API token in this order:
+Use the caller's selected credential. Otherwise prefer the dedicated Plans key:
 
-1. `$MYSLOP_APPS_TOKEN` if set — the myslop platform token authenticates here
-   directly
-2. The file `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-apps/token`
-3. Legacy: `$MYSLOP_PLANS_TOKEN` or the file
-   `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-plans/token`
-
-If none exists, or a request returns `401 unauthorized` (token revoked), have
-the user run the platform setup in an interactive terminal, then retry:
-
-```sh
-curl -fsS https://myslop.cloud/setup.sh | bash
-```
-
-One platform token covers the myslop-apps CLI and every myslop app (files,
-mail, plans).
+1. `$MYSLOP_PLANS_TOKEN`
+2. `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-plans/token`
+3. `$MYSLOP_APPS_TOKEN`, then `${XDG_CONFIG_HOME:-$HOME/.config}/myslop-apps/token`
+   (authoring only; platform keys cannot review)
 
 ```sh
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
-TOKEN="${MYSLOP_APPS_TOKEN:-$(cat "$cfg/myslop-apps/token" 2>/dev/null || cat "$cfg/myslop-plans/token")}"
+if [ -n "${MYSLOP_PLANS_TOKEN:-}" ]; then
+  TOKEN="$MYSLOP_PLANS_TOKEN"
+elif [ -r "$cfg/myslop-plans/token" ]; then
+  TOKEN="$(cat "$cfg/myslop-plans/token")"
+elif [ -n "${MYSLOP_APPS_TOKEN:-}" ]; then
+  TOKEN="$MYSLOP_APPS_TOKEN"
+else
+  TOKEN="$(cat "$cfg/myslop-apps/token")"
+fi
 ```
+
+Existing Plans keys and their local files keep working unchanged. The signed-in
+owner can edit a key's **Permissions** at https://plans.myslop.app/dashboard
+without rotating its secret. To add review while retaining current authoring
+access, keep the existing boxes checked and enable **Approve and request
+changes**. The **Oracle reviewer** preset instead grants read, comment and
+review only. Everyone holding the same key shares its permissions; use separate
+keys when authors must not be able to approve.
+
+`GET /api/verify` returns the selected key's ID/name and effective `permissions`.
+A `401` means the selected credential is invalid or revoked. A `403` with
+`required_permission` means it lacks that action: ask the owner to change its
+permissions, and never retry using a more privileged credential automatically.
+If no credential exists, the user can create an author key in an interactive
+terminal with `curl -fsS https://plans.myslop.app/setup.sh | bash`; setup never
+grants review permission.
+
+Permissions are `plans:read`, `plans:write`, `plans:comment`, `plans:resolve`
+and `plans:review`. Agent API access stays within the issuing user's account,
+including plans authored with that user's other keys. Raw markdown URLs remain
+readable by anyone with the link.
 
 ## Authoring the plan
 
@@ -102,7 +121,11 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 
 Returns `status` (`open` | `approved` | `changes_requested` — derived from
 reviews of the current version), `versions`, `reviews` (who approved / requested
-changes, with notes), and `unresolved_comment_count`.
+changes, with notes and `author: {type, id, name}`), and
+`unresolved_comment_count`. `author.type` is `user` or `agent`; agent IDs are
+stable key IDs, separate from human reviewer IDs. Do not infer human approval
+from aggregate `status`: when the caller requires a human decision, inspect
+current-version reviews with `author.type == "user"`.
 
 ```sh
 curl -sS -H "Authorization: Bearer $TOKEN" \
@@ -154,11 +177,41 @@ to earlier versions); reviewers can diff any two versions in the UI. Keep
 block wording stable where nothing changed so their comments stay anchored.
 Don't publish micro-revisions — batch feedback into one version.
 
+## Review as an authorized agent
+
+This requires `plans:review` on a Plans (`msp_`) key. It does not require a
+browser session. Read the current version and fetch its pinned markdown
+(`/p/<id>/md?v=N&plain=1`) before evaluating it; post detailed findings as
+comments and use the review note for a short summary.
+
+```sh
+jq -n --argjson version 3 --arg verdict approved --arg note "Rollback is covered." \
+  '{version: $version, verdict: $verdict, note: $note}' \
+| curl -sS --fail-with-body -X POST \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d @- https://plans.myslop.app/api/agent/plans/<id>/review
+```
+
+Use `changes_requested` instead of `approved` to request a revision. The
+response includes `ok`, the reviewed `version`, `current_version` and `status`.
+A `409` means that version is no longer current: fetch and review the new
+version, never simply substitute the new number on the old verdict. A revision
+published immediately after your write may also make a successful review's
+`version` older than `current_version`; the old approval does not carry over.
+
+Reviews are labelled `Agent · <key name>`. Each key can update its own verdict
+for a version without overwriting another key or its owner's human review.
+Changes requested takes precedence over approvals. Resolving a comment does
+not clear a changes-requested verdict. Revoking a key or removing its review
+permission blocks future submissions but preserves decisions already recorded.
+
 ## Workflow summary
 
 1. Write `plan.md`, publish with a meaningful title, share the returned URL.
 2. Poll status/comments. Reply to questions; resolve addressed threads.
 3. On `changes_requested` (or actionable comments): revise, `PUT` a new
    version with a `note`, and tell the user it's ready for re-review.
-4. On `approved`: proceed with the work. Plans are managed (list, delete) at
-   https://plans.myslop.app/dashboard.
+4. On `approved`: report the version and reviewer identity. Implement only
+   when the caller separately authorized implementation and the required human
+   or agent review condition is satisfied. Plans and key permissions are managed
+   at https://plans.myslop.app/dashboard.

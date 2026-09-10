@@ -5,6 +5,10 @@ import skillHtmlTemplate from "./skill.html";
 import setupShB64 from "./setup-sh.generated";
 import { diffPlan, renderPlan, type PlanBlock } from "./markdown";
 import { platformIdentity, resolvePlatformUser } from "../../../platform/src/app-identity";
+import {
+  agentPermission, AUTHOR_PERMISSIONS, parsePermissions, PERMISSION_OPTIONS,
+  PERMISSION_PRESETS, storedPermissions, type Permission,
+} from "./permissions";
 
 // Decoded lazily-once; stored base64 because raw shell text in the bundle
 // trips the Cloudflare API WAF on deploy.
@@ -235,32 +239,39 @@ interface TokenOwner {
   userId: string;
   tokenId: string | null;
   tokenName: string;
+  permissions: Permission[];
 }
 
-// Platform identity (dispatcher-verified, injected for msa_ tokens and
-// platform sessions) is preferred; legacy per-app msp_ tokens keep working.
-// tokenName labels agent comments in the UI.
+// An explicit app credential wins over an advisory platform cookie identity.
+// Never fall back after an invalid/revoked bearer or combine their permissions.
 async function agentOwner(req: Request, env: Env): Promise<TokenOwner | null> {
+  if (req.headers.has("Authorization")) return verifyAgentToken(env, bearer(req));
   const identity = platformIdentity(req);
   if (identity) {
     return {
       userId: await resolvePlatformUser(env.DB, identity),
       tokenId: null,
       tokenName: identity.name ?? identity.email ?? "agent",
+      // The dispatcher does not forward per-key identity or action permissions.
+      // Platform identities retain author access, never review authority.
+      permissions: AUTHOR_PERMISSIONS,
     };
   }
-  return verifyAgentToken(env, bearer(req));
+  return null;
 }
 
 async function verifyAgentToken(env: Env, secret: string): Promise<TokenOwner | null> {
   if (!secret.startsWith(TOKEN_PREFIX)) return null;
   const hash = await sha256Hex(secret);
   const row = await env.DB.prepare(
-    "SELECT id, user_id, name FROM tokens WHERE hash = ? AND revoked_at IS NULL",
+    "SELECT id, user_id, name, permissions FROM tokens WHERE hash = ? AND revoked_at IS NULL",
   )
     .bind(hash)
-    .first<{ id: string; user_id: string; name: string }>();
-  return row ? { userId: row.user_id, tokenId: row.id, tokenName: row.name } : null;
+    .first<{ id: string; user_id: string; name: string; permissions: string }>();
+  return row ? {
+    userId: row.user_id, tokenId: row.id, tokenName: row.name,
+    permissions: storedPermissions(row.permissions),
+  } : null;
 }
 
 function bearer(req: Request): string {
@@ -296,6 +307,17 @@ async function getVersionMarkdown(env: Env, planId: string, version: number): Pr
 
 type PlanStatus = "open" | "approved" | "changes_requested";
 
+// One source for every status/review projection, including lists and raw markdown.
+const ALL_REVIEWS_SQL = `
+  SELECT plan_id, version, user_id, NULL AS token_id, NULL AS agent_name,
+    verdict, note, created_at, 'user' AS author_type FROM reviews
+  UNION ALL
+  SELECT plan_id, version, user_id, token_id, agent_name,
+    verdict, note, created_at, 'agent' AS author_type FROM agent_reviews`;
+const REVIEW_COUNTS_SQL = `
+  (SELECT COUNT(*) FROM (${ALL_REVIEWS_SQL}) r WHERE r.plan_id=p.id AND r.version=p.current_version AND r.verdict='approved') AS approvals,
+  (SELECT COUNT(*) FROM (${ALL_REVIEWS_SQL}) r WHERE r.plan_id=p.id AND r.version=p.current_version AND r.verdict='changes_requested') AS changes`;
+
 function deriveStatus(approvals: number, changes: number): PlanStatus {
   if (changes > 0) return "changes_requested";
   if (approvals > 0) return "approved";
@@ -307,7 +329,7 @@ async function planStatus(env: Env, plan: PlanRow): Promise<PlanStatus> {
     `SELECT
        SUM(CASE WHEN verdict='approved' THEN 1 ELSE 0 END) AS approvals,
        SUM(CASE WHEN verdict='changes_requested' THEN 1 ELSE 0 END) AS changes
-     FROM reviews WHERE plan_id = ? AND version = ?`,
+     FROM (${ALL_REVIEWS_SQL}) WHERE plan_id = ? AND version = ?`,
   )
     .bind(plan.id, plan.current_version)
     .first<{ approvals: number | null; changes: number | null }>();
@@ -357,9 +379,9 @@ function commentAuthor(row: CommentRow): { type: "user" | "agent"; name: string;
 async function loadReviews(env: Env, planId: string) {
   const { results } = await env.DB.prepare(
     `SELECT r.version, r.verdict, r.note, r.created_at, r.user_id,
-       u.name AS user_name, u.email AS user_email
-     FROM reviews r JOIN users u ON u.id = r.user_id
-     WHERE r.plan_id = ? ORDER BY r.created_at`,
+       r.author_type, r.token_id, r.agent_name, u.name AS user_name, u.email AS user_email
+     FROM (${ALL_REVIEWS_SQL}) r JOIN users u ON u.id = r.user_id
+     WHERE r.plan_id = ? ORDER BY r.created_at, r.author_type, r.user_id, r.token_id`,
   )
     .bind(planId)
     .all<{
@@ -368,17 +390,65 @@ async function loadReviews(env: Env, planId: string) {
       note: string | null;
       created_at: number;
       user_id: string;
+      author_type: "user" | "agent";
+      token_id: string | null;
+      agent_name: string | null;
       user_name: string | null;
       user_email: string | null;
     }>();
-  return results.map((r) => ({
-    version: r.version,
-    verdict: r.verdict,
-    note: r.note,
-    created_at: r.created_at,
-    user_id: r.user_id,
-    user_name: r.user_name || r.user_email || r.user_id.slice(0, 12),
-  }));
+  return results.map((r) => {
+    const name = r.author_type === "agent"
+      ? `Agent · ${r.agent_name}` : r.user_name || r.user_email || r.user_id.slice(0, 12);
+    return {
+      version: r.version, verdict: r.verdict, note: r.note, created_at: r.created_at,
+      user_id: r.user_id, user_name: name,
+      author: { type: r.author_type, id: r.token_id ?? r.user_id, name },
+    };
+  });
+}
+
+type Reviewer = { type: "user"; userId: string } |
+  { type: "agent"; userId: string; tokenId: string; tokenName: string };
+
+async function submitReview(req: Request, env: Env, plan: PlanRow, reviewer: Reviewer): Promise<Response> {
+  const body = await readJson<{ verdict?: string; note?: string; version?: number }>(req);
+  const verdict = body?.verdict;
+  if (verdict !== "approved" && verdict !== "changes_requested") {
+    return json({ error: "verdict must be approved or changes_requested" }, 400);
+  }
+  const version = body?.version;
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
+    return json({ error: "version must be a positive integer" }, 400);
+  }
+  const note = typeof body?.note === "string" ? body.note.trim().slice(0, MAX_NOTE) || null : null;
+  const now = Date.now();
+  // Check the version in the write itself: a concurrent revision between the
+  // initial plan lookup and this statement cannot receive a stale approval.
+  const result = reviewer.type === "agent"
+    ? await env.DB.prepare(
+      `INSERT INTO agent_reviews (plan_id, version, token_id, user_id, agent_name, verdict, note, created_at)
+       SELECT id, current_version, ?, ?, ?, ?, ?, ? FROM plans
+       WHERE id = ? AND current_version = ? AND user_id = ?
+       ON CONFLICT(plan_id, version, token_id) DO UPDATE SET
+         verdict = excluded.verdict, note = excluded.note, created_at = excluded.created_at,
+         agent_name = excluded.agent_name`,
+    ).bind(reviewer.tokenId, reviewer.userId, reviewer.tokenName, verdict, note, now,
+      plan.id, version, reviewer.userId).run()
+    : await env.DB.prepare(
+      `INSERT INTO reviews (plan_id, version, user_id, verdict, note, created_at)
+       SELECT id, current_version, ?, ?, ?, ? FROM plans WHERE id = ? AND current_version = ?
+       ON CONFLICT(plan_id, version, user_id) DO UPDATE SET
+         verdict = excluded.verdict, note = excluded.note, created_at = excluded.created_at`,
+    ).bind(reviewer.userId, verdict, note, now, plan.id, version).run();
+  const current = await getPlan(env, plan.id);
+  if (!current) return json({ error: "not found" }, 404);
+  if (!result.meta.changes) {
+    return json({ error: "stale version: reviews apply to the current version only", current_version: current.current_version }, 409);
+  }
+  return json({
+    ok: true, version, current_version: current.current_version,
+    status: await planStatus(env, current),
+  });
 }
 
 // Re-attach a comment's block anchor in the viewed version: exact id match
@@ -485,6 +555,11 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
   }
 
   const segments = url.pathname.slice("/api/agent/plans".length).split("/").filter(Boolean);
+  const permission = agentPermission(req.method, segments);
+  if (!permission) return json({ error: "not found" }, 404);
+  if (!owner.permissions.includes(permission)) {
+    return json({ error: `missing permission: ${permission}`, required_permission: permission }, 403);
+  }
 
   // POST /api/agent/plans — create a plan (version 1).
   if (segments.length === 0 && req.method === "POST") {
@@ -517,8 +592,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
   if (segments.length === 0 && req.method === "GET") {
     const { results } = await env.DB.prepare(
       `SELECT p.id, p.title, p.current_version, p.created_at, p.updated_at,
-         (SELECT COUNT(*) FROM reviews r WHERE r.plan_id=p.id AND r.version=p.current_version AND r.verdict='approved') AS approvals,
-         (SELECT COUNT(*) FROM reviews r WHERE r.plan_id=p.id AND r.version=p.current_version AND r.verdict='changes_requested') AS changes,
+         ${REVIEW_COUNTS_SQL},
          (SELECT COUNT(*) FROM comments c WHERE c.plan_id=p.id AND c.parent_id IS NULL AND c.resolved_at IS NULL) AS unresolved
        FROM plans p WHERE p.user_id = ? ORDER BY p.updated_at DESC LIMIT 200`,
     )
@@ -571,6 +645,7 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
         verdict: r.verdict,
         note: r.note,
         by: r.user_name,
+        author: r.author,
         created_at: r.created_at,
       })),
       unresolved_comment_count: unresolvedRow?.n ?? 0,
@@ -637,6 +712,12 @@ async function handleAgentApi(req: Request, env: Env, url: URL, ctx: ExecutionCo
         resolved: Boolean(c.resolved_at),
       })),
     });
+  }
+
+  // Review permission is only available to a stable, individually granted app key.
+  if (segments.length === 2 && segments[1] === "review" && req.method === "POST") {
+    if (!owner.tokenId) return json({ error: "a Plans API key with plans:review is required" }, 403);
+    return submitReview(req, env, plan, { type: "agent", ...owner, tokenId: owner.tokenId });
   }
 
   // POST /api/agent/plans/:id/comments — agent comment or reply.
@@ -727,15 +808,21 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
     const u = await env.DB.prepare("SELECT name, email FROM users WHERE id = ?")
       .bind(owner.userId)
       .first<{ name: string | null; email: string | null }>();
-    return json({ ok: true, user: { name: u?.name ?? null, email: u?.email ?? null } });
+    return json({
+      ok: true, user: { name: u?.name ?? null, email: u?.email ?? null },
+      permissions: owner.permissions,
+      token: owner.tokenId ? { id: owner.tokenId, name: owner.tokenName } : null,
+    });
   }
 
   // Agent API is Bearer-authed, not session-authed.
-  if (path.startsWith("/api/agent/plans")) {
+  if (path === "/api/agent/plans" || path.startsWith("/api/agent/plans/")) {
     return handleAgentApi(req, env, url, ctx);
   }
 
-  // Everything below requires a session.
+  // Everything below requires a session. An explicit bearer must not fall back
+  // to a browser cookie to bypass its permissions or elevate itself.
+  if (req.headers.has("Authorization")) return json({ error: "session authentication required" }, 401);
   const user = await getSessionUser(req, env);
   if (!user) return json({ error: "unauthorized" }, 401);
 
@@ -754,19 +841,25 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
   // GET /api/tokens
   if (path === "/api/tokens" && req.method === "GET") {
     const { results } = await env.DB.prepare(
-      `SELECT id, name, prefix, created_at, last_used_at
+      `SELECT id, name, prefix, created_at, last_used_at, permissions
        FROM tokens WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`,
     )
       .bind(user.id)
-      .all();
-    return json({ tokens: results });
+      .all<{ id: string; name: string; prefix: string; created_at: number; last_used_at: number | null; permissions: string }>();
+    return json({
+      tokens: results.map((t) => ({ ...t, permissions: storedPermissions(t.permissions) })),
+      permission_options: PERMISSION_OPTIONS, permission_presets: PERMISSION_PRESETS,
+    });
   }
 
-  // POST /api/tokens {name} — mint; full secret returned exactly once.
+  // POST /api/tokens {name, permissions?} — mint; full secret returned exactly once.
   if (path === "/api/tokens" && req.method === "POST") {
     let name = "unnamed";
-    const body = await readJson<{ name?: string }>(req);
-    if (typeof body?.name === "string" && body.name.trim()) name = body.name.trim().slice(0, 64);
+    const body = await readJson<{ name?: string; permissions?: unknown }>(req);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "invalid body" }, 400);
+    const permissions = body.permissions === undefined ? AUTHOR_PERMISSIONS : parsePermissions(body.permissions);
+    if (!permissions) return json({ error: "permissions must be an array of known Plans permissions" }, 400);
+    if (typeof body.name === "string" && body.name.trim()) name = body.name.trim().slice(0, 64);
     const secret = TOKEN_PREFIX + b64url(crypto.getRandomValues(new Uint8Array(32)));
     const token = {
       id: randomId(8),
@@ -775,11 +868,24 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
       created_at: Date.now(),
     };
     await env.DB.prepare(
-      "INSERT INTO tokens (id, user_id, hash, name, prefix, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tokens (id, user_id, hash, name, prefix, created_at, permissions) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-      .bind(token.id, user.id, token.hash, name, token.prefix, token.created_at)
+      .bind(token.id, user.id, token.hash, name, token.prefix, token.created_at, JSON.stringify(permissions))
       .run();
-    return json({ token: { id: token.id, name, prefix: token.prefix, created_at: token.created_at, secret } }, 201);
+    return json({ token: { id: token.id, name, prefix: token.prefix, created_at: token.created_at, secret, permissions } }, 201);
+  }
+
+  // Change permissions without rotating the key or changing its reviewer identity.
+  if (/^\/api\/tokens\/[^/]+$/.test(path) && req.method === "PATCH") {
+    const body = await readJson<{ permissions?: unknown }>(req);
+    const permissions = parsePermissions(body?.permissions);
+    if (!permissions) return json({ error: "permissions must be an array of known Plans permissions" }, 400);
+    const id = path.slice("/api/tokens/".length);
+    const result = await env.DB.prepare(
+      "UPDATE tokens SET permissions = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
+    ).bind(JSON.stringify(permissions), id, user.id).run();
+    if (!result.meta.changes) return json({ error: "not found" }, 404);
+    return json({ ok: true, token: { id, permissions } });
   }
 
   // DELETE /api/tokens/<id> — revoke.
@@ -798,8 +904,7 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
   if (path === "/api/plans" && req.method === "GET") {
     const { results } = await env.DB.prepare(
       `SELECT p.id, p.title, p.current_version, p.created_at, p.updated_at,
-         (SELECT COUNT(*) FROM reviews r WHERE r.plan_id=p.id AND r.version=p.current_version AND r.verdict='approved') AS approvals,
-         (SELECT COUNT(*) FROM reviews r WHERE r.plan_id=p.id AND r.version=p.current_version AND r.verdict='changes_requested') AS changes,
+         ${REVIEW_COUNTS_SQL},
          (SELECT COUNT(*) FROM comments c WHERE c.plan_id=p.id AND c.parent_id IS NULL) AS comment_count,
          (SELECT COUNT(*) FROM comments c WHERE c.plan_id=p.id AND c.parent_id IS NULL AND c.resolved_at IS NULL) AS unresolved
        FROM plans p WHERE p.user_id = ? ORDER BY p.updated_at DESC LIMIT 200`,
@@ -851,7 +956,7 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
         currentReviews.filter((r) => r.verdict === "approved").length,
         currentReviews.filter((r) => r.verdict === "changes_requested").length,
       );
-      const myReview = currentReviews.find((r) => r.user_id === user.id) ?? null;
+      const myReview = currentReviews.find((r) => r.author.type === "user" && r.user_id === user.id) ?? null;
       return json({
         plan: {
           id: plan.id,
@@ -870,7 +975,8 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
           verdict: r.verdict,
           note: r.note,
           by: r.user_name,
-          mine: r.user_id === user.id,
+          author: r.author,
+          mine: r.author.type === "user" && r.user_id === user.id,
           created_at: r.created_at,
         })),
         my_review: myReview ? { verdict: myReview.verdict, note: myReview.note } : null,
@@ -979,24 +1085,7 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
 
     // POST /api/plans/:id/review {verdict, note?, version} — current version only.
     if (segments.length === 2 && segments[1] === "review" && req.method === "POST") {
-      const body = await readJson<{ verdict?: string; note?: string; version?: number }>(req);
-      const verdict = body?.verdict;
-      if (verdict !== "approved" && verdict !== "changes_requested") {
-        return json({ error: "verdict must be approved or changes_requested" }, 400);
-      }
-      const version = Number(body?.version);
-      if (version !== plan.current_version) {
-        return json({ error: "stale version: reviews apply to the current version only", current_version: plan.current_version }, 409);
-      }
-      const note = typeof body?.note === "string" ? body.note.trim().slice(0, MAX_NOTE) || null : null;
-      await env.DB.prepare(
-        `INSERT INTO reviews (plan_id, version, user_id, verdict, note, created_at) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(plan_id, version, user_id) DO UPDATE SET
-           verdict = excluded.verdict, note = excluded.note, created_at = excluded.created_at`,
-      )
-        .bind(plan.id, version, user.id, verdict, note, Date.now())
-        .run();
-      return json({ ok: true, status: await planStatus(env, plan) });
+      return submitReview(req, env, plan, { type: "user", userId: user.id });
     }
 
     // DELETE /api/plans/:id — owner only; removes everything.
@@ -1004,6 +1093,7 @@ async function handleApi(req: Request, env: Env, url: URL, ctx: ExecutionContext
       if (plan.user_id !== user.id) return json({ error: "forbidden" }, 403);
       await env.DB.prepare("DELETE FROM comments WHERE plan_id = ?").bind(plan.id).run();
       await env.DB.prepare("DELETE FROM reviews WHERE plan_id = ?").bind(plan.id).run();
+      await env.DB.prepare("DELETE FROM agent_reviews WHERE plan_id = ?").bind(plan.id).run();
       await env.DB.prepare("DELETE FROM plan_versions WHERE plan_id = ?").bind(plan.id).run();
       await env.DB.prepare("DELETE FROM plans WHERE id = ?").bind(plan.id).run();
       return json({ ok: true });
@@ -1096,7 +1186,7 @@ export default {
 
     return new Response("method not allowed\n", {
       status: 405,
-      headers: { allow: "GET, HEAD, POST, PUT, DELETE" },
+      headers: { allow: "GET, HEAD, POST, PUT, PATCH, DELETE" },
     });
   },
 } satisfies ExportedHandler<Env>;

@@ -28,6 +28,9 @@
     },
     "apps/plans": {
       "name": "myslop-plans",
+      "devDependencies": {
+        "@playwright/test": "^1.62.1",
+      },
     },
     "platform": {
       "name": "myslop-apps",

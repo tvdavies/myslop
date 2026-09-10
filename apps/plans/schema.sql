@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS tokens (
   prefix TEXT NOT NULL,             -- first chars of secret, for display only
   created_at INTEGER NOT NULL,
   last_used_at INTEGER,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  permissions TEXT NOT NULL DEFAULT '["plans:read","plans:write","plans:comment","plans:resolve"]'
 );
 CREATE INDEX IF NOT EXISTS tokens_user ON tokens(user_id, created_at DESC);
 
@@ -74,4 +75,18 @@ CREATE TABLE IF NOT EXISTS reviews (
   note TEXT,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (plan_id, version, user_id)
+);
+
+-- Separate from human reviews: two keys owned by one user cannot overwrite
+-- each other or that user's verdict. Revocation preserves historical decisions.
+CREATE TABLE IF NOT EXISTS agent_reviews (
+  plan_id TEXT NOT NULL REFERENCES plans(id),
+  version INTEGER NOT NULL,
+  token_id TEXT NOT NULL REFERENCES tokens(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  agent_name TEXT NOT NULL,
+  verdict TEXT NOT NULL CHECK (verdict IN ('approved','changes_requested')),
+  note TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (plan_id, version, token_id)
 );

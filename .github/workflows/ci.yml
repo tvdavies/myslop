@@ -24,6 +24,7 @@ jobs:
       - run: bun run check
       - run: bunx playwright install --with-deps chromium
       - run: bun run --cwd platform test:browser
+      - run: bun run --cwd apps/plans test:browser
       - name: Verify generated files
         run: git diff --exit-code -- platform/src/cli.generated.ts platform/src/setup-sh.generated.ts platform/src/dashboard-assets.generated.ts apps/files/plugins apps/mail/plugins
       - name: Verify source histories

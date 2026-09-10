@@ -649,7 +649,7 @@
     const current = state.reviews.filter((r) => r.version === p.current_version);
     $("review-strip").innerHTML = current.length
       ? "Reviews on v" + p.current_version + ": " + current.map((r) =>
-          `<span class="${r.verdict === "approved" ? "v-approved" : "v-changes"}">${esc(r.by)} ${r.verdict === "approved" ? "✓ approved" : "✗ requested changes"}${r.note ? ` — “${esc(r.note)}”` : ""}</span>`,
+          `<span data-reviewer-type="${r.author?.type === "agent" ? "agent" : "user"}" title="${r.author?.type === "agent" ? "API key review, not a human review" : "Human review"}" class="${r.verdict === "approved" ? "v-approved" : "v-changes"}">${esc(r.by)} ${r.verdict === "approved" ? "✓ approved" : "✗ requested changes"}${r.note ? ` — “${esc(r.note)}”` : ""}</span>`,
         ).join(" · ")
       : "No reviews yet on v" + p.current_version + ".";
 
