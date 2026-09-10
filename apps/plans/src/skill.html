@@ -52,7 +52,7 @@
   </header>
 
   <h1>The <span class="mono">plan-review</span> skill</h1>
-  <p class="lede">An agent skill that publishes markdown plans to plans.myslop.app for human review — block-level comments, approvals, versions, and diffs — and teaches the agent to pull feedback, reply, and publish revisions. This is exactly what gets installed — read it before you do.</p>
+  <p class="lede">An agent skill for publishing plans, reading feedback and revising. Humans review in the browser; agents can also approve or request changes when you explicitly grant review permission to their Plans key. Read the skill before installing it.</p>
 
   <div class="badges">
     <span class="badge">Plain <span class="mono">curl</span> + <span class="mono">jq</span></span>
@@ -61,7 +61,7 @@
   </div>
 
   <h2>What it does</h2>
-  <p>When your agent drafts a plan that should be approved before implementation, this skill tells it how to publish the plan with your API token, hand you the review URL, poll for your comments and verdicts, reply as a clearly-labelled agent, and publish revised versions until you approve. It only ever calls the <span class="mono">plans.myslop.app</span> API with a token you minted.</p>
+  <p>Author agents publish plans and respond to feedback. An Oracle reviewer can read, comment, approve or request changes on plans in your account without permission to edit them. Agent decisions are labelled separately from human reviews. Existing local Plans keys keep working: change a key's Permissions in the dashboard without replacing its secret. Everyone using that key shares its permissions.</p>
 
   <h2>Install</h2>
 
@@ -80,7 +80,7 @@ curl -fsS https://plans.myslop.app/skill.md \
 into ~/.claude/skills/plan-review/SKILL.md, then follow it.<button data-copy="cmd-agent">Copy</button></div>
   </div>
 
-  <p class="dim">First publish will prompt you to authenticate — the skill runs <span class="mono">curl -fsS https://plans.myslop.app/setup.sh | bash</span>, which opens a page that mints your token. See <a href="/setup.sh">setup.sh</a> before running it.</p>
+  <p class="dim">Already have a local Plans key? Keep it. If you need a new key, <span class="mono">curl -fsS https://plans.myslop.app/setup.sh | bash</span> creates an author key, never a reviewer key. Enable review explicitly in the <a href="/dashboard">dashboard</a>. See <a href="/setup.sh">setup.sh</a> before running it.</p>
 
   <h2>The skill file</h2>
   <details open>

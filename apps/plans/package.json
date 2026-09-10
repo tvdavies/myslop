@@ -6,6 +6,10 @@
     "dev": "bun scripts/gen-setup.ts && bunx wrangler dev",
     "deploy": "bun scripts/gen-setup.ts && bunx wrangler deploy",
     "test": "bun scripts/gen-setup.ts && bun test",
+    "test:browser": "bun scripts/gen-setup.ts && bun test/browser.ts",
     "typecheck": "bun scripts/gen-setup.ts && bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
   }
 }

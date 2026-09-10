@@ -99,6 +99,20 @@
     color: var(--text); border-radius: 6px; padding: 6px 10px; min-width: 220px;
   }
   input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  select { font: inherit; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  .permission-options { border: 0; width: 100%; display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 8px 0; }
+  .permission-options legend { color: var(--dim); font-size: 12.5px; }
+  .permission-options label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+  .permission-options input { accent-color: var(--accent); }
+  .permission-summary { color: var(--dim); font-size: 12px; }
+  .token-help { color: var(--dim); font-size: 12.5px; width: 100%; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin: auto; width: min(560px, calc(100% - 32px)); }
+  dialog::backdrop { background: #0008; }
+  dialog h2 { margin: 0 0 12px; color: var(--text); }
+  dialog p { margin-bottom: 14px; }
+  dialog .row-actions { margin-top: 16px; }
+  .token-table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
   tr:last-child td { border-bottom: none; }
@@ -211,7 +225,7 @@
 
   <div id="view-signin" class="hero" hidden>
     <h1>plans.myslop.app</h1>
-    <p id="signin-sub">Agent-authored plans, reviewed by humans. Sign in to manage your plans and API tokens.</p>
+    <p id="signin-sub">Agent-authored plans, reviewed by humans or agents you authorize. Sign in to manage your plans and API tokens.</p>
     <button class="primary" id="signin-btn">Sign in with shoo.dev</button>
   </div>
 
@@ -242,21 +256,29 @@
 
     <h2>API tokens</h2>
     <div class="panel">
-      <div class="toolbar">
-        <input type="text" id="token-name" placeholder="Token name (e.g. laptop, claude)">
-        <button class="primary" id="token-create">Generate token</button>
-      </div>
+      <form class="toolbar" id="token-form">
+        <input type="text" id="token-name" aria-label="Token name" maxlength="64" placeholder="Token name (e.g. laptop, Oracle)">
+        <select id="token-preset" aria-label="New token permission preset">
+          <option value="author">Author</option><option value="oracle">Oracle reviewer</option>
+          <option value="reader">Read-only</option><option value="custom">Custom</option>
+        </select>
+        <button type="submit" class="primary" id="token-create" disabled>Generate token</button>
+        <fieldset class="permission-options" id="token-permissions"><legend>Permissions</legend></fieldset>
+        <p class="token-help">Applies only to your account's plans. Review is opt-in. Existing keys keep working; use Permissions below to change access without replacing a key.</p>
+      </form>
       <div class="secret-reveal" id="secret-reveal" hidden>
         <code id="secret-value"></code>
         <p>Shown once — paste it into the setup script on the machine that needs it.
           <button class="small" id="secret-copy">Copy</button></p>
       </div>
-      <table id="tokens-table" hidden>
-        <thead>
-          <tr><th>Name</th><th>Token</th><th class="hide-sm">Created</th><th class="hide-sm">Last used</th><th></th></tr>
-        </thead>
-        <tbody id="tokens-body"></tbody>
-      </table>
+      <div class="token-table-wrap">
+        <table id="tokens-table" hidden>
+          <thead>
+            <tr><th>Name</th><th>Token</th><th>Permissions</th><th class="hide-sm">Created</th><th class="hide-sm">Last used</th><th></th></tr>
+          </thead>
+          <tbody id="tokens-body"></tbody>
+        </table>
+      </div>
       <div class="empty" id="tokens-empty" hidden>No tokens yet — generate one above.</div>
     </div>
 
@@ -265,7 +287,23 @@
     </div>
   </div>
 </div>
-<div id="toast"></div>
+<div id="toast" role="status"></div>
+<dialog id="permissions-dialog" aria-labelledby="permissions-title">
+  <form id="permissions-form">
+    <h2 id="permissions-title">Edit token permissions</h2>
+    <p id="permissions-token-name"></p>
+    <p class="token-help">The secret stays the same. Changes apply to everyone using this key, including agents already configured locally. Granting review lets them approve or request changes on your plans.</p>
+    <select id="edit-preset" aria-label="Existing token permission preset">
+      <option value="author">Author</option><option value="oracle">Oracle reviewer</option>
+      <option value="reader">Read-only</option><option value="custom">Custom</option>
+    </select>
+    <fieldset class="permission-options" id="edit-permissions"><legend>Permissions</legend></fieldset>
+    <div class="row-actions">
+      <button type="button" id="permissions-cancel">Cancel</button>
+      <button type="submit" class="primary" id="permissions-save">Save permissions</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 (() => {
@@ -423,40 +461,106 @@
   });
 
   // --- tokens ---
+  let tokenRows = [];
+  let permissionOptions = [];
+  let permissionPresets = {};
+  let permissionsReady = false;
+  let editingToken = null;
+  function renderPermissions(id, selected) {
+    $(id).innerHTML = '<legend>Permissions</legend>' + permissionOptions.map((p) =>
+      `<label><input type="checkbox" value="${esc(p.id)}" ${selected.includes(p.id) ? "checked" : ""}>${esc(p.label)}</label>`,
+    ).join("");
+  }
+  function selectedPermissions(id) {
+    return [...$(id).querySelectorAll("input:checked")].map((input) => input.value);
+  }
+  function presetFor(permissions) {
+    return Object.keys(permissionPresets).find((key) =>
+      permissionPresets[key].length === permissions.length && permissionPresets[key].every((p) => permissions.includes(p)),
+    ) || "custom";
+  }
+  for (const [presetId, fieldId] of [["token-preset", "token-permissions"], ["edit-preset", "edit-permissions"]]) {
+    $(presetId).addEventListener("change", () => {
+      const permissions = permissionPresets[$(presetId).value];
+      if (permissions) renderPermissions(fieldId, permissions);
+    });
+    $(fieldId).addEventListener("change", () => { $(presetId).value = presetFor(selectedPermissions(fieldId)); });
+  }
   async function loadTokens() {
-    const { tokens } = await api("/api/tokens");
+    const { tokens, permission_options, permission_presets } = await api("/api/tokens");
+    tokenRows = tokens;
+    permissionOptions = permission_options;
+    permissionPresets = permission_presets;
+    if (!permissionsReady) {
+      renderPermissions("token-permissions", permissionPresets.author);
+      permissionsReady = true;
+      $("token-create").disabled = false;
+    }
     $("tokens-table").hidden = tokens.length === 0;
     $("tokens-empty").hidden = tokens.length !== 0;
     $("tokens-body").innerHTML = tokens.map((t) => `
       <tr data-id="${esc(t.id)}" data-name="${esc(t.name)}">
         <td>${esc(t.name)}</td>
         <td class="dim mono">${esc(t.prefix)}…</td>
+        <td class="permission-summary">${t.permissions.length ? t.permissions.map((p) => esc(p.replace("plans:", ""))).join(", ") : "None"}</td>
         <td class="dim hide-sm">${fmtDate(t.created_at)}</td>
         <td class="dim hide-sm">${fmtDate(t.last_used_at)}</td>
-        <td><div class="row-actions"><button class="small" data-act="revoke">Revoke</button></div></td>
+        <td><div class="row-actions"><button class="small" data-act="permissions">Permissions</button><button class="small" data-act="revoke">Revoke</button></div></td>
       </tr>`).join("");
   }
-  $("token-create").addEventListener("click", async () => {
+  $("token-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!permissionsReady || $("token-create").disabled) return;
+    $("token-create").disabled = true;
     try {
       const name = $("token-name").value.trim() || "unnamed";
-      const { token } = await api("/api/tokens", { method: "POST", body: { name } });
+      const permissions = selectedPermissions("token-permissions");
+      const { token } = await api("/api/tokens", { method: "POST", body: { name, permissions } });
       $("token-name").value = "";
+      $("token-preset").value = "author";
+      renderPermissions("token-permissions", permissionPresets.author);
       $("secret-reveal").hidden = false;
       $("secret-value").textContent = token.secret;
       await loadTokens();
     } catch (err) { toast(err.message, true); }
+    finally { $("token-create").disabled = false; }
   });
   $("secret-copy").addEventListener("click", () => copyText($("secret-value").textContent));
+  $("permissions-cancel").addEventListener("click", () => $("permissions-dialog").close());
+  $("permissions-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!editingToken || $("permissions-save").disabled) return;
+    const id = editingToken.id;
+    const permissions = selectedPermissions("edit-permissions");
+    $("permissions-save").disabled = true;
+    try {
+      await api("/api/tokens/" + id, { method: "PATCH", body: { permissions } });
+      $("permissions-dialog").close();
+      await loadTokens();
+      toast("Permissions saved — your existing key is unchanged");
+    } catch (err) { toast(err.message, true); }
+    finally { $("permissions-save").disabled = false; }
+  });
   $("tokens-body").addEventListener("click", async (e) => {
-    const btn = e.target.closest("button[data-act='revoke']");
+    const btn = e.target.closest("button[data-act]");
     if (!btn) return;
     const tr = btn.closest("tr");
-    if (!confirm(`Revoke token "${tr.dataset.name}"?\n\nAnything using it will stop working immediately.`)) return;
+    if (btn.dataset.act === "permissions") {
+      editingToken = tokenRows.find((t) => t.id === tr.dataset.id);
+      if (!editingToken) return;
+      $("permissions-token-name").textContent = editingToken.name + " · " + editingToken.prefix + "…";
+      $("edit-preset").value = presetFor(editingToken.permissions);
+      renderPermissions("edit-permissions", editingToken.permissions);
+      $("permissions-dialog").showModal();
+      return;
+    }
+    if (btn.dataset.act !== "revoke" || !confirm(`Revoke token "${tr.dataset.name}"?\n\nAnything using it will stop working immediately.`)) return;
+    btn.disabled = true;
     try {
       await api("/api/tokens/" + tr.dataset.id, { method: "DELETE" });
       await loadTokens();
       toast("Revoked");
-    } catch (err) { toast(err.message, true); }
+    } catch (err) { toast(err.message, true); btn.disabled = false; }
   });
 
   // --- setup mode: auto-mint a token and show it on a clean page ---
