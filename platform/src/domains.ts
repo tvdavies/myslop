@@ -6,6 +6,7 @@ export const APP_HOST_SUFFIX = ".myslop.app";
 export const LEGACY_APP_HOST_SUFFIX = ".apps.myslop.app";
 
 export const PASSTHROUGH_HOSTS = new Set([
+  "cantstop.myslop.app",
   "events.myslop.app",
   "hello.myslop.app",
   "os.myslop.app",
@@ -16,6 +17,7 @@ export const PASSTHROUGH_HOSTS = new Set([
 
 export const RESERVED_APP_SLUGS = new Set([
   "apps",
+  "cantstop",
   "events",
   "hello",
   "os",
