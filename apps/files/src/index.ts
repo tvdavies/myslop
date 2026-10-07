@@ -329,6 +329,13 @@ function uploadContentType(req: Request, filename: string): string {
   return clientType && clientType !== "application/octet-stream" ? clientType : guessType(filename);
 }
 
+// If-None-Match uses weak comparison: any listed tag (W/ ignored) or "*".
+function etagMatches(header: string | null, etag: string): boolean {
+  if (!header) return false;
+  const opaque = (tag: string) => tag.trim().replace(/^W\//, "");
+  return header.split(",").some((tag) => tag.trim() === "*" || opaque(tag) === opaque(etag));
+}
+
 function randomId(bytes: number): string {
   return hex(crypto.getRandomValues(new Uint8Array(bytes)));
 }
@@ -599,20 +606,32 @@ export default {
         if (!existing || existing.user_id !== owner.userId) {
           return new Response("not found\n", { status: 404 });
         }
+        // Making a file private takes effect before the new bytes land, so
+        // they are never served under the old public flag. Making it public
+        // waits until after.
+        const privacy = url.searchParams.get("private");
+        if (privacy === "1") {
+          await env.DB.prepare("UPDATE files SET private = 1 WHERE key = ?").bind(key).run();
+        }
         const replaced = await env.FILES.put(key, req.body, {
           httpMetadata: { contentType: uploadContentType(req, filename) },
         });
-        const privacy = url.searchParams.get("private");
-        await env.DB.prepare(
+        const updated = await env.DB.prepare(
           `UPDATE files SET size = ?, content_type = ?, private = COALESCE(?, private) WHERE key = ?`,
         )
           .bind(
             replaced?.size ?? null,
             replaced?.httpMetadata?.contentType ?? guessType(filename),
-            privacy === "1" ? 1 : privacy === "0" ? 0 : null,
+            privacy === "0" ? 0 : null,
             key,
           )
           .run();
+        // Deleted while the body was uploading: don't leave an untracked
+        // object behind, which GET would otherwise serve as public.
+        if (!updated.meta?.changes) {
+          await env.FILES.delete(key);
+          return new Response("not found\n", { status: 404 });
+        }
         return new Response(`https://${url.hostname}/${key}\n`, { status: 200 });
       }
 
@@ -691,15 +710,10 @@ export default {
 
       const headers = new Headers();
       obj.writeHttpMetadata(headers);
-      headers.set("etag", obj.httpEtag);
       // Owners can replace a file in place, so public files revalidate by
       // ETag rather than caching as immutable; private files must never land
       // in a shared cache.
       headers.set("cache-control", isPrivate ? "private, no-store" : "public, no-cache");
-      if (!isPrivate && req.headers.get("If-None-Match") === obj.httpEtag) {
-        await obj.body?.cancel();
-        return new Response(null, { status: 304, headers });
-      }
       if (!headers.get("content-type")) {
         headers.set("content-type", guessType(key));
       }
@@ -721,6 +735,14 @@ export default {
           "content-security-policy",
           "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads",
         );
+      }
+      // The validator covers the content type as well as the bytes, so a
+      // replacement that only changes the type is never answered with a 304.
+      const etag = `"${obj.httpEtag.replace(/^W\/|"/g, "")}-${(await sha256Hex(ct)).slice(0, 8)}"`;
+      headers.set("etag", etag);
+      if (!isPrivate && etagMatches(req.headers.get("If-None-Match"), etag)) {
+        await obj.body?.cancel();
+        return new Response(null, { status: 304, headers });
       }
       return new Response(req.method === "HEAD" ? null : obj.body, { headers });
     }

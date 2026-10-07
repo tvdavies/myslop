@@ -48,8 +48,8 @@ function identityDatabase(beforeUserInsert?: (db: Database) => void) {
             injected = true;
             beforeUserInsert(db);
           }
-          db.query(sql).run(...values as never[]);
-          return { success: true };
+          const result = db.query(sql).run(...values as never[]);
+          return { success: true, meta: { changes: result.changes } };
         },
       };
     },
@@ -138,20 +138,42 @@ describe("Files app compatibility", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe("https://demo.myslop.app");
   });
 
-  test("answers 304 when the public object's ETag still matches", async () => {
+  function conditionalGet(contentType: string, ifNoneMatch?: string) {
     let cancelled = false;
     const body = new ReadableStream({ cancel() { cancelled = true; } });
     const env = {
       DB: database(),
       EVENTS_SECRET: "secret",
-      FILES: { get: async () => ({ body, httpEtag: '"v2"', writeHttpMetadata() {} }) },
+      FILES: {
+        get: async () => ({
+          body,
+          httpEtag: '"v2"',
+          writeHttpMetadata(headers: Headers) { headers.set("content-type", contentType); },
+        }),
+      },
     };
-    const response = await worker.fetch(new Request("https://files.myslop.app/abc/index.html", {
-      headers: { "if-none-match": '"v2"' },
-    }) as never, env as never, context()) as unknown as Response;
-    expect(response.status).toBe(304);
-    expect(response.headers.get("etag")).toBe('"v2"');
-    expect(cancelled).toBe(true);
+    const headers: Record<string, string> = ifNoneMatch ? { "if-none-match": ifNoneMatch } : {};
+    const response = worker.fetch(new Request("https://files.myslop.app/abc/index.html", { headers }) as never, env as never, context()) as unknown as Promise<Response>;
+    return { response, cancelled: () => cancelled };
+  }
+
+  test("answers 304 with the sandbox when the ETag still matches", async () => {
+    const etag = (await (await conditionalGet("text/html").response).headers.get("etag"))!;
+    for (const header of [etag, `W/${etag}`, `"other", ${etag}`, "*"]) {
+      const request = conditionalGet("text/html", header);
+      const response = await request.response;
+      expect(response.status).toBe(304);
+      expect(response.headers.get("content-security-policy")).toContain("sandbox");
+      expect(request.cancelled()).toBe(true);
+    }
+    expect((await conditionalGet("text/html", '"v1"').response).status).toBe(200);
+  });
+
+  test("a content-type change alone changes the ETag", async () => {
+    const plain = (await conditionalGet("text/plain").response).headers.get("etag")!;
+    const response = await conditionalGet("text/html", plain).response;
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-security-policy")).toContain("sandbox");
   });
 
   test("keeps private files hidden without the owner session", async () => {
@@ -242,10 +264,34 @@ describe("platform identity", () => {
     ]);
   });
 
-  test("can change privacy while replacing", async () => {
+  test("makes a file private before its new bytes are written", async () => {
     const { db, env } = replaceEnv();
-    await worker.fetch(put("0123456789/report.html?private=1") as never, env as never, context());
+    let privateAtWrite: unknown = null;
+    const files = {
+      ...env.FILES,
+      put: async (key: string, body: unknown, opts: { httpMetadata?: { contentType?: string } }) => {
+        privateAtWrite = db.query("SELECT private FROM files WHERE key = ?").get(key);
+        return env.FILES.put(key, body, opts);
+      },
+    };
+    await worker.fetch(put("0123456789/report.html?private=1") as never, { ...env, FILES: files } as never, context());
+    expect(privateAtWrite).toEqual({ private: 1 });
     expect(db.query("SELECT private FROM files WHERE key = ?").get("0123456789/report.html")).toEqual({ private: 1 });
+  });
+
+  test("does not recreate a file deleted while its replacement uploads", async () => {
+    const { db, env } = replaceEnv();
+    const deleted: string[] = [];
+    const files = {
+      put: async (key: string) => {
+        db.query("DELETE FROM files WHERE key = ?").run(key);
+        return { size: 9, httpMetadata: { contentType: "text/html" } };
+      },
+      delete: async (key: string) => { deleted.push(key); },
+    };
+    const response = await worker.fetch(put("0123456789/report.html") as never, { ...env, FILES: files } as never, context()) as unknown as Response;
+    expect(response.status).toBe(404);
+    expect(deleted).toEqual(["0123456789/report.html"]);
   });
 
   test("refuses to replace another user's file or an unknown key", async () => {

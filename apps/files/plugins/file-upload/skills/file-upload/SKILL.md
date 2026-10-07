@@ -60,6 +60,8 @@ curl -sS --fail-with-body -X PUT -T <local-path> \
   URL or someone else's file returns `404` and nothing is created.
 - Privacy is kept unless you append `?private=1` or `?private=0`.
 - Public files revalidate by ETag, so readers get the new version on reload.
+  Files first served before replace existed were cached as immutable; a
+  browser that already opened one needs a hard refresh.
 - Prefer this over a fresh upload whenever the file is a new version of
   something already shared.
 
