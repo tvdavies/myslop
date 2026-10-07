@@ -48,8 +48,8 @@ function identityDatabase(beforeUserInsert?: (db: Database) => void) {
             injected = true;
             beforeUserInsert(db);
           }
-          db.query(sql).run(...values as never[]);
-          return { success: true };
+          const result = db.query(sql).run(...values as never[]);
+          return { success: true, meta: { changes: result.changes } };
         },
       };
     },
@@ -92,7 +92,7 @@ describe("Files app compatibility", () => {
     expect(concurrent.db.query("SELECT user_id FROM sessions WHERE id=?").get("race-session")).toEqual({ user_id: "winner" });
   });
 
-  test("streams public objects with immutable and sandbox headers", async () => {
+  test("streams public objects with revalidating cache and sandbox headers", async () => {
     const body = new ReadableStream({ start(controller) { controller.enqueue(encoder.encode("<script>ok</script>")); controller.close(); } });
     const env = {
       DB: database(),
@@ -107,7 +107,7 @@ describe("Files app compatibility", () => {
     };
     const response = await worker.fetch(new Request("https://files.myslop.app/abc/index.html") as never, env as never, context()) as unknown as Response;
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    expect(response.headers.get("cache-control")).toBe("public, no-cache");
     expect(response.headers.get("content-security-policy")).toContain("sandbox");
     expect(await response.text()).toBe("<script>ok</script>");
   });
@@ -136,6 +136,44 @@ describe("Files app compatibility", () => {
     expect(stored!.key).toMatch(/^app\/events\/[a-f0-9]{10}\/report\.txt$/);
     expect(stored!.body).toBeInstanceOf(ReadableStream);
     expect(response.headers.get("access-control-allow-origin")).toBe("https://demo.myslop.app");
+  });
+
+  function conditionalGet(contentType: string, ifNoneMatch?: string) {
+    let cancelled = false;
+    const body = new ReadableStream({ cancel() { cancelled = true; } });
+    const env = {
+      DB: database(),
+      EVENTS_SECRET: "secret",
+      FILES: {
+        get: async () => ({
+          body,
+          httpEtag: '"v2"',
+          writeHttpMetadata(headers: Headers) { headers.set("content-type", contentType); },
+        }),
+      },
+    };
+    const headers: Record<string, string> = ifNoneMatch ? { "if-none-match": ifNoneMatch } : {};
+    const response = worker.fetch(new Request("https://files.myslop.app/abc/index.html", { headers }) as never, env as never, context()) as unknown as Promise<Response>;
+    return { response, cancelled: () => cancelled };
+  }
+
+  test("answers 304 with the sandbox when the ETag still matches", async () => {
+    const etag = (await (await conditionalGet("text/html").response).headers.get("etag"))!;
+    for (const header of [etag, `W/${etag}`, `"other", ${etag}`, "*"]) {
+      const request = conditionalGet("text/html", header);
+      const response = await request.response;
+      expect(response.status).toBe(304);
+      expect(response.headers.get("content-security-policy")).toContain("sandbox");
+      expect(request.cancelled()).toBe(true);
+    }
+    expect((await conditionalGet("text/html", '"v1"').response).status).toBe(200);
+  });
+
+  test("a content-type change alone changes the ETag", async () => {
+    const plain = (await conditionalGet("text/plain").response).headers.get("etag")!;
+    const response = await conditionalGet("text/html", plain).response;
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-security-policy")).toContain("sandbox");
   });
 
   test("keeps private files hidden without the owner session", async () => {
@@ -192,6 +230,96 @@ describe("platform identity", () => {
       user_id: "shoo-user",
       filename: "report.txt",
     });
+  });
+
+  function replaceEnv() {
+    const { db, env } = identityEnv();
+    db.query("INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?)").run("someone-else", "bob@example.com", "Bob", 1);
+    db.query("INSERT INTO files (key, user_id, filename, size, content_type, private, created_at) VALUES (?,?,?,?,?,?,?)")
+      .run("0123456789/report.html", "shoo-user", "report.html", 1, "text/html; charset=utf-8", 0, 1);
+    db.query("INSERT INTO files (key, user_id, filename, size, content_type, private, created_at) VALUES (?,?,?,?,?,?,?)")
+      .run("abcdefabcd/notes.txt", "someone-else", "notes.txt", 1, "text/plain; charset=utf-8", 0, 1);
+    const puts: string[] = [];
+    const files = {
+      put: async (key: string, _body: unknown, opts: { httpMetadata?: { contentType?: string } }) => {
+        puts.push(key);
+        return { size: 9, httpMetadata: { contentType: opts.httpMetadata?.contentType } };
+      },
+    };
+    return { db, puts, env: { ...env, FILES: files } };
+  }
+
+  function put(path: string, body = "version 2") {
+    return new Request(`https://files.myslop.app/${path}`, { method: "PUT", headers: IDENTITY_HEADERS, body });
+  }
+
+  test("replaces the owner's file in place and keeps its URL", async () => {
+    const { db, puts, env } = replaceEnv();
+    const response = await worker.fetch(put("0123456789/report.html") as never, env as never, context()) as unknown as Response;
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("https://files.myslop.app/0123456789/report.html\n");
+    expect(puts).toEqual(["0123456789/report.html"]);
+    expect(db.query("SELECT key, size, private FROM files WHERE user_id = ? ORDER BY key").all("shoo-user")).toEqual([
+      { key: "0123456789/report.html", size: 9, private: 0 },
+    ]);
+  });
+
+  test("makes a file private before its new bytes are written", async () => {
+    const { db, env } = replaceEnv();
+    let privateAtWrite: unknown = null;
+    const files = {
+      ...env.FILES,
+      put: async (key: string, body: unknown, opts: { httpMetadata?: { contentType?: string } }) => {
+        privateAtWrite = db.query("SELECT private FROM files WHERE key = ?").get(key);
+        return env.FILES.put(key, body, opts);
+      },
+    };
+    await worker.fetch(put("0123456789/report.html?private=1") as never, { ...env, FILES: files } as never, context());
+    expect(privateAtWrite).toEqual({ private: 1 });
+    expect(db.query("SELECT private FROM files WHERE key = ?").get("0123456789/report.html")).toEqual({ private: 1 });
+  });
+
+  test("does not recreate a file deleted while its replacement uploads", async () => {
+    const { db, env } = replaceEnv();
+    const deleted: string[] = [];
+    const files = {
+      put: async (key: string) => {
+        db.query("DELETE FROM files WHERE key = ?").run(key);
+        return { size: 9, httpMetadata: { contentType: "text/html" } };
+      },
+      delete: async (key: string) => { deleted.push(key); },
+    };
+    const response = await worker.fetch(put("0123456789/report.html") as never, { ...env, FILES: files } as never, context()) as unknown as Response;
+    expect(response.status).toBe(404);
+    expect(deleted).toEqual(["0123456789/report.html"]);
+  });
+
+  test("refuses to replace another user's file or an unknown key", async () => {
+    const { db, puts, env } = replaceEnv();
+    for (const path of ["abcdefabcd/notes.txt", "fedcba9876/report.html"]) {
+      const response = await worker.fetch(put(path) as never, env as never, context()) as unknown as Response;
+      expect(response.status).toBe(404);
+    }
+    expect(puts).toEqual([]);
+    expect(db.query("SELECT COUNT(*) AS n FROM files").get()).toEqual({ n: 2 });
+  });
+
+  test("deletes the owner's file and refuses anyone else's", async () => {
+    const { db, env } = replaceEnv();
+    const deleted: string[] = [];
+    const files = { ...env.FILES, delete: async (key: string) => { deleted.push(key); } };
+    const del = (path: string, headers: Record<string, string> = IDENTITY_HEADERS) =>
+      worker.fetch(new Request(`https://files.myslop.app/${path}`, { method: "DELETE", headers }) as never, { ...env, FILES: files } as never, context()) as unknown as Promise<Response>;
+
+    expect((await del("0123456789/report.html", {})).status).toBe(401);
+    expect((await del("abcdefabcd/notes.txt")).status).toBe(404);
+    expect((await del("fedcba9876/missing.txt")).status).toBe(404);
+    expect(deleted).toEqual([]);
+
+    const response = await del("0123456789/report.html");
+    expect(response.status).toBe(200);
+    expect(deleted).toEqual(["0123456789/report.html"]);
+    expect(db.query("SELECT key FROM files ORDER BY key").all()).toEqual([{ key: "abcdefabcd/notes.txt" }]);
   });
 
   test("verifies identity at /api/verify without a bearer", async () => {
