@@ -321,6 +321,14 @@ function guessType(filename: string): string {
   return MIME[ext] ?? "application/octet-stream";
 }
 
+// Keys minted by direct upload: a 10-char hex prefix and one filename segment.
+const UPLOAD_KEY = /^[a-f0-9]{10}\/[^/]+$/;
+
+function uploadContentType(req: Request, filename: string): string {
+  const clientType = req.headers.get("Content-Type");
+  return clientType && clientType !== "application/octet-stream" ? clientType : guessType(filename);
+}
+
 function randomId(bytes: number): string {
   return hex(crypto.getRandomValues(new Uint8Array(bytes)));
 }
@@ -581,18 +589,39 @@ export default {
       const filename = key.split("/").pop() ?? "";
       if (!filename) return new Response("missing filename\n", { status: 400 });
 
+      // Replace in place: PUT to an existing upload's own URL overwrites it,
+      // so links already shared show the new version. Owner only; a key that
+      // is unknown or someone else's is a 404, never a new file.
+      if (UPLOAD_KEY.test(key)) {
+        const existing = await env.DB.prepare("SELECT user_id FROM files WHERE key = ?")
+          .bind(key)
+          .first<{ user_id: string }>();
+        if (!existing || existing.user_id !== owner.userId) {
+          return new Response("not found\n", { status: 404 });
+        }
+        const replaced = await env.FILES.put(key, req.body, {
+          httpMetadata: { contentType: uploadContentType(req, filename) },
+        });
+        const privacy = url.searchParams.get("private");
+        await env.DB.prepare(
+          `UPDATE files SET size = ?, content_type = ?, private = COALESCE(?, private) WHERE key = ?`,
+        )
+          .bind(
+            replaced?.size ?? null,
+            replaced?.httpMetadata?.contentType ?? guessType(filename),
+            privacy === "1" ? 1 : privacy === "0" ? 0 : null,
+            key,
+          )
+          .run();
+        return new Response(`https://${url.hostname}/${key}\n`, { status: 200 });
+      }
+
       // Random prefix: no collisions between uploads, URLs not enumerable.
       const id = crypto.randomUUID().replaceAll("-", "").slice(0, 10);
       const objectKey = `${id}/${filename}`;
 
-      const clientType = req.headers.get("Content-Type");
       const obj = await env.FILES.put(objectKey, req.body, {
-        httpMetadata: {
-          contentType:
-            clientType && clientType !== "application/octet-stream"
-              ? clientType
-              : guessType(filename),
-        },
+        httpMetadata: { contentType: uploadContentType(req, filename) },
       });
 
       if (owner) {
@@ -625,6 +654,23 @@ export default {
       });
     }
 
+    // Delete: the owner removes their own upload with the same credentials
+    // used to upload it. Unknown or someone else's key is a 404.
+    if (req.method === "DELETE" && UPLOAD_KEY.test(key)) {
+      const bearer = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+      const owner = await uploadOwner(req, env, bearer || req.headers.get("X-Upload-Token") || "");
+      if (!owner) return new Response("unauthorized\n", { status: 401 });
+      const existing = await env.DB.prepare("SELECT user_id FROM files WHERE key = ?")
+        .bind(key)
+        .first<{ user_id: string }>();
+      if (!existing || existing.user_id !== owner.userId) {
+        return new Response("not found\n", { status: 404 });
+      }
+      await env.FILES.delete(key);
+      await env.DB.prepare("DELETE FROM files WHERE key = ?").bind(key).run();
+      return new Response("deleted\n", { status: 200 });
+    }
+
     if (req.method === "GET" || req.method === "HEAD") {
       if (!key) return Response.redirect(`${url.origin}/dashboard`, 302);
 
@@ -646,12 +692,14 @@ export default {
       const headers = new Headers();
       obj.writeHttpMetadata(headers);
       headers.set("etag", obj.httpEtag);
-      // Keys are content-unique (random prefix): public files cache forever;
-      // private files must never land in a shared cache.
-      headers.set(
-        "cache-control",
-        isPrivate ? "private, no-store" : "public, max-age=31536000, immutable",
-      );
+      // Owners can replace a file in place, so public files revalidate by
+      // ETag rather than caching as immutable; private files must never land
+      // in a shared cache.
+      headers.set("cache-control", isPrivate ? "private, no-store" : "public, no-cache");
+      if (!isPrivate && req.headers.get("If-None-Match") === obj.httpEtag) {
+        await obj.body?.cancel();
+        return new Response(null, { status: 304, headers });
+      }
       if (!headers.get("content-type")) {
         headers.set("content-type", guessType(key));
       }

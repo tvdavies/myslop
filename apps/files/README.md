@@ -7,7 +7,9 @@ Sign in at **https://files.myslop.app/dashboard** (auth by [shoo.dev](https://sh
 ## API
 
 - `PUT /<filename>` with `Authorization: Bearer <msf_token>` (or `X-Upload-Token: <msf_token>`) — stores the file under a random 10-char prefix, records it to your account, and returns the permanent URL in the response body (`201`). Append `?private=1` to make it owner-only.
-- `GET /<prefix>/<filename>` — serves the file with extension-inferred Content-Type and `immutable` caching. Private files 404 unless requested with the owner's dashboard session cookie (served `no-store`).
+- `PUT /<prefix>/<filename>` with the same credentials — replaces an existing upload in place (owner only), keeping its URL; `200` with the URL, `404` for an unknown or foreign key. `?private=1`/`?private=0` changes privacy; otherwise it is kept.
+- `DELETE /<prefix>/<filename>` with the same credentials — deletes an upload (owner only); `200`, or `404` for an unknown or foreign key.
+- `GET /<prefix>/<filename>` — serves the file with extension-inferred Content-Type. Public files are `public, no-cache` with an ETag (`304` on `If-None-Match`), so replacements show up on reload. Private files 404 unless requested with the owner's dashboard session cookie (served `no-store`).
 - `GET /skill.md` — installable agent skill describing the upload flow.
 - `GET /setup.sh` — client setup script: `curl -fsS https://files.myslop.app/setup.sh | bash` opens the dashboard, waits for a pasted token, verifies it via `GET /api/verify` (Bearer-authed), and persists `MYSLOP_FILES_TOKEN` (bash/zsh/fish + `~/.config/myslop-files/token`).
 - `PUT /app-upload/<filename>` with a per-app HMAC token (`EVENTS_SECRET`, shared with myslop events/storage) — scoped browser uploads for myslop apps, unchanged.
