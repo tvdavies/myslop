@@ -1,15 +1,19 @@
 # myslop-files
 
-Public file host at **https://files.myslop.app** — the `files` app on the Myslop platform, backed by the adopted `myslop-files` R2 bucket and D1 database for users, API tokens, and file metadata.
+File host at **https://files.myslop.app** — the `files` app on the Myslop platform, backed by the adopted `myslop-files` R2 bucket and D1 database for users, API tokens, and file metadata.
 
-Sign in at **https://files.myslop.app/dashboard** (auth by [shoo.dev](https://shoo.dev)) to mint upload tokens, see your files, make them private, or delete them.
+Sign in at **https://files.myslop.app/dashboard** (auth by [shoo.dev](https://shoo.dev)) to mint upload tokens, see your files, change who can open them, or delete them.
+
+## Visibility
+
+Each file is `protected` (anyone signed in to myslop; the default), `public` (anyone with the link) or `private` (the uploader only). Protected and private files are checked on every request against platform identity (a platform session on this host or an `msa_` token, injected by the dispatcher) or this app's own dashboard session. A browser without either is redirected to sign in at myslop.cloud and returned to the file; other clients get `401`. Files that predate the visibility column kept their old setting (private or public). The legacy `private` column mirrors `visibility <> 'public'` so a rollback to an older build fails closed, and triggers from `migrations/002_file_visibility.sql` give writes from such a build (which set only `private`) their old private/public meaning.
 
 ## API
 
-- `PUT /<filename>` with `Authorization: Bearer <msf_token>` (or `X-Upload-Token: <msf_token>`) — stores the file under a random 10-char prefix, records it to your account, and returns the permanent URL in the response body (`201`). Append `?private=1` to make it owner-only.
-- `PUT /<prefix>/<filename>` with the same credentials — replaces an existing upload in place (owner only), keeping its URL; `200` with the URL, `404` for an unknown or foreign key. `?private=1`/`?private=0` changes privacy; otherwise it is kept.
+- `PUT /<filename>` with `Authorization: Bearer <msf_token>` (or `X-Upload-Token: <msf_token>`) — stores the file under a random 10-char prefix, records it to your account, and returns the permanent URL in the response body (`201`). Append `?visibility=public|protected|private` to choose who can open it (default `protected`); the legacy `?private=1` / `?private=0` mean private / public.
+- `PUT /<prefix>/<filename>` with the same credentials — replaces an existing upload in place (owner only), keeping its URL; `200` with the URL, `404` for an unknown or foreign key. `?visibility=` changes visibility; otherwise it is kept.
 - `DELETE /<prefix>/<filename>` with the same credentials — deletes an upload (owner only); `200`, or `404` for an unknown or foreign key.
-- `GET /<prefix>/<filename>` — serves the file with extension-inferred Content-Type. Public files are `public, no-cache` with an ETag (`304` on `If-None-Match`), so replacements show up on reload. The ETag covers the content type as well as the bytes. Files served before this change were cached as `immutable` for a year, so a browser that already fetched one may keep its old copy until a hard refresh. Private files 404 unless requested with the owner's dashboard session cookie (served `no-store`).
+- `GET /<prefix>/<filename>` — serves the file with extension-inferred Content-Type. Public files are `public, no-cache` and protected files `private, no-cache`, both with an ETag (`304` on `If-None-Match`), so replacements show up on reload. The ETag covers the content type as well as the bytes. Files served before this change were cached as `immutable` for a year, so a browser that already fetched one may keep its old copy until a hard refresh. Private files 404 unless requested by the owner, through the dashboard session or platform identity (served `no-store`). Protected files need any signed-in user, as above.
 - `GET /skill.md` — installable agent skill describing the upload flow.
 - `GET /setup.sh` — client setup script: `curl -fsS https://files.myslop.app/setup.sh | bash` opens the dashboard, waits for a pasted token, verifies it via `GET /api/verify` (Bearer-authed), and persists `MYSLOP_FILES_TOKEN` (bash/zsh/fish + `~/.config/myslop-files/token`).
 - `PUT /app-upload/<filename>` with a per-app HMAC token (`EVENTS_SECRET`, shared with myslop events/storage) — scoped browser uploads for myslop apps, unchanged.

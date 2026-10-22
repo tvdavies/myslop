@@ -68,7 +68,12 @@
     border: 1px solid var(--border); background: none; display: inline-flex; align-items: center; gap: 5px;
   }
   .vis.private { color: #92400e; border-color: #f5d9a8; background: #fef8ec; }
-  .vis:hover { border-color: var(--dim); background: #f3f4f6; }
+  .vis.protected { color: #1e40af; border-color: #bfd3f8; background: #eff4fe; }
+  .vis:hover { border-color: var(--dim); }
+  .vis select {
+    appearance: none; border: none; background: none; padding: 0; margin: 0;
+    font: inherit; color: inherit; cursor: pointer;
+  }
   .row-actions { display: flex; gap: 5px; justify-content: flex-end; }
   .toolbar { display: flex; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
   .secret-reveal { margin: 12px 14px; padding: 12px 14px; border: 1px solid #bfd3f8; border-radius: 6px; background: #eff4fe; }
@@ -256,6 +261,12 @@
   const ICON_TRASH = svg('<path d="M2.5 4.5h11M6.5 4.5v-2h3v2M4 4.5l.7 9h6.6l.7-9"/><path d="M6.5 7v4M9.5 7v4"/>');
   const ICON_GLOBE = svg('<circle cx="8" cy="8" r="5.5"/><path d="M2.5 8h11M8 2.5c-3.5 3.5-3.5 7.5 0 11 3.5-3.5 3.5-7.5 0-11z"/>');
   const ICON_LOCK = svg('<rect x="4" y="7" width="8" height="6.5" rx="1"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>');
+  const ICON_USERS = svg('<circle cx="6" cy="5.5" r="2.2"/><path d="M2 13c0-2.2 1.8-3.8 4-3.8s4 1.6 4 3.8"/><path d="M10.5 3.6a2.2 2.2 0 0 1 0 4.1M12 9.5c1.2.5 2 1.8 2 3.5"/>');
+  const VISIBILITY = {
+    private: { label: "Private", icon: ICON_LOCK, confirm: "Only you (signed in) will be able to open it." },
+    protected: { label: "Signed in", icon: ICON_USERS, confirm: "Anyone signed in to myslop will be able to open it." },
+    public: { label: "Public", icon: ICON_GLOBE, confirm: "Anyone with the link will be able to open it." },
+  };
 
   // --- shoo PKCE ---
   function randStr(len) {
@@ -328,11 +339,13 @@
     $("files-table").hidden = files.length === 0;
     $("files-empty").hidden = files.length !== 0;
     $("files-body").innerHTML = files.map((f) => `
-      <tr data-key="${esc(f.key)}" data-name="${esc(f.filename)}" data-private="${f.private ? 1 : 0}">
+      <tr data-key="${esc(f.key)}" data-name="${esc(f.filename)}" data-visibility="${esc(f.visibility)}">
         <td><div class="fname">${iconFor(f.filename)}<a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.filename)}</a></div></td>
         <td class="dim hide-sm">${fmtSize(f.size)}</td>
         <td class="dim hide-sm">${fmtDate(f.created_at)}</td>
-        <td><button class="vis ${f.private ? "private" : ""}" data-act="vis" title="Change visibility">${f.private ? ICON_LOCK : ICON_GLOBE}${f.private ? "Private" : "Public"}</button></td>
+        <td><label class="vis ${esc(f.visibility)}" title="Change visibility">${VISIBILITY[f.visibility].icon}<select data-act="vis">${
+          Object.entries(VISIBILITY).map(([value, v]) => `<option value="${value}"${value === f.visibility ? " selected" : ""}>${v.label}</option>`).join("")
+        }</select></label></td>
         <td>
           <div class="row-actions">
             <button class="iconbtn" data-act="copy" title="Copy URL">${ICON_COPY}</button>
@@ -350,15 +363,6 @@
     try {
       if (btn.dataset.act === "copy") {
         await copyText(location.origin + "/" + key);
-      } else if (btn.dataset.act === "vis") {
-        const isPrivate = tr.dataset.private === "1";
-        const msg = isPrivate
-          ? `Make "${name}" PUBLIC?\n\nAnyone with the link will be able to open it.`
-          : `Make "${name}" private?\n\nOnly you (signed in) will be able to open it.`;
-        if (!confirm(msg)) return;
-        await api("/api/files/" + key, { method: "PATCH", body: { private: !isPrivate } });
-        await loadFiles();
-        toast(isPrivate ? "Now public" : "Now private");
       } else if (btn.dataset.act === "delete") {
         if (!confirm(`Delete "${name}"?\n\nThe URL will stop working permanently.`)) return;
         await api("/api/files/" + key, { method: "DELETE" });
@@ -366,6 +370,27 @@
         toast("Deleted");
       }
     } catch (err) { toast(err.message, true); }
+  });
+
+  $("files-body").addEventListener("change", async (e) => {
+    const select = e.target.closest("select[data-act='vis']");
+    if (!select) return;
+    const tr = select.closest("tr");
+    const visibility = select.value;
+    const { label, confirm: detail } = VISIBILITY[visibility];
+    const shown = visibility === "public" ? label.toUpperCase() : label.toLowerCase();
+    if (!confirm(`Change "${tr.dataset.name}" to ${shown}?\n\n${detail}`)) {
+      select.value = tr.dataset.visibility;
+      return;
+    }
+    try {
+      await api("/api/files/" + tr.dataset.key, { method: "PATCH", body: { visibility } });
+      await loadFiles();
+      toast("Now " + label.toLowerCase());
+    } catch (err) {
+      select.value = tr.dataset.visibility;
+      toast(err.message, true);
+    }
   });
 
   // --- tokens ---
