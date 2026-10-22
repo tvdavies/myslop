@@ -503,7 +503,9 @@ describe("platform identity", () => {
 describe("visibility migration", () => {
   test("backfills existing files and gives legacy writes their old meaning", async () => {
     const root = new URL("..", import.meta.url).pathname;
-    const before = await Bun.$`git show HEAD:apps/files/schema.sql`.cwd(root).text();
+    // The schema as it was before migration 002: the same tables without the visibility column.
+    const before = (await Bun.file(`${root}/schema.sql`).text()).replace(/^\s*visibility TEXT[^\n]*\n/m, "");
+    expect(before).not.toContain("visibility TEXT");
     const db = new Database(":memory:");
     db.exec(before);
     db.exec("INSERT INTO users (id, created_at) VALUES ('u', 1)");
