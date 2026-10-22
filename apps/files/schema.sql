@@ -36,7 +36,12 @@ CREATE TABLE IF NOT EXISTS files (
   filename TEXT NOT NULL,
   size INTEGER,
   content_type TEXT,
+  -- Legacy mirror of visibility <> 'public', kept in step so a rollback to a
+  -- build that only reads this column fails closed for protected files.
   private INTEGER NOT NULL DEFAULT 0,
+  -- private | protected | public. The worker always sets it; triggers from
+  -- migrations/002 fill it in for builds that only write `private`.
+  visibility TEXT CHECK (visibility IN ('private', 'protected', 'public')),
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS files_user ON files(user_id, created_at DESC);

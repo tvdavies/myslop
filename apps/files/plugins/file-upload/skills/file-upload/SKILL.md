@@ -1,11 +1,27 @@
 ---
 name: file-upload
-description: Upload a local file (screenshot, recording, log, HTML artifact) to files.myslop.app and return a permanent public URL. Use whenever a shareable link to a local file is needed, including for GitHub pull requests, Slack messages, or sharing HTML documents.
+description: Upload a local file (screenshot, recording, log, HTML artifact) to files.myslop.app and return a permanent URL, viewable by anyone signed in to myslop by default. Use whenever a shareable link to a local file is needed, including for GitHub pull requests, Slack messages, or sharing HTML documents.
 ---
 
 # file-upload
 
 Upload files to https://files.myslop.app and get back a permanent URL.
+
+## Visibility
+
+Every file has one of three visibilities, set with `?visibility=` on upload:
+
+| Visibility | Who can open it |
+| --- | --- |
+| `protected` (default) | Anyone signed in to myslop. Browsers are sent to sign in first. |
+| `public` | Anyone with the link, including services that fetch it anonymously. |
+| `private` | Only the account that uploaded it. |
+
+Use `?visibility=public` whenever something other than a signed-in person
+fetches the file: images or videos embedded in a GitHub PR, issue or comment
+(GitHub proxies them anonymously), images embedded in a plan or another page,
+Slack link previews, or links for people without a myslop account. Leave the
+default for links that myslop users click and open themselves.
 
 ## Token
 
@@ -37,13 +53,15 @@ curl -sS --fail-with-body -X PUT -T <local-path> \
   "https://files.myslop.app/<filename>"
 ```
 
-- The response body is the permanent public URL (files are stored under a random,
+- The response body is the permanent URL (files are stored under a random,
   non-enumerable prefix — always use the returned URL, never construct it).
 - `<filename>` is the basename you want in the URL; prefer descriptive kebab-case.
 - Content-Type is inferred from the extension; pass `-H "Content-Type: ..."` to override.
 - Uploaded HTML is served as a browsable page (sandboxed), so sharing HTML
   artifacts/reports works directly.
-- Append `?private=1` for files only the account owner should see.
+- Append `?visibility=public` or `?visibility=private` to change who can open
+  it (see Visibility above). The older `?private=1` / `?private=0` still work
+  and mean private / public.
 
 ## Update a file in place
 
@@ -58,8 +76,8 @@ curl -sS --fail-with-body -X PUT -T <local-path> \
 
 - Returns `200` and the same URL. Only the owner can replace a file; an unknown
   URL or someone else's file returns `404` and nothing is created.
-- Privacy is kept unless you append `?private=1` or `?private=0`.
-- Public files revalidate by ETag, so readers get the new version on reload.
+- Visibility is kept unless you append `?visibility=...`.
+- Public and protected files revalidate by ETag, so readers get the new version on reload.
   Files first served before replace existed were cached as immutable; a
   browser that already opened one needs a hard refresh.
 - Prefer this over a fresh upload whenever the file is a new version of
@@ -78,5 +96,5 @@ Owner only. Returns `200`, or `404` for an unknown URL or someone else's file.
 ## After uploading
 
 Return the URL to the user or embed it where they asked (PR body, Slack message,
-etc.). Files are managed — private, delete, list — at
+etc.). Files are managed — visibility, delete, list — at
 https://files.myslop.app/dashboard.

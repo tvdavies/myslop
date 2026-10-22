@@ -4,7 +4,7 @@ import worker, { createShooSession, resolveShooUserId } from "../src/index";
 
 const encoder = new TextEncoder();
 
-function database(metadata: { user_id?: string; private?: number } | null = null) {
+function database(metadata: { user_id?: string; visibility?: string } | null = null) {
   return {
     prepare() {
       return {
@@ -176,10 +176,42 @@ describe("Files app compatibility", () => {
     expect(response.headers.get("content-security-policy")).toContain("sandbox");
   });
 
+  // A stored object whose body must not be sent: denial cancels it.
+  function refusedObject() {
+    let cancelled = false;
+    return {
+      cancelled: () => cancelled,
+      FILES: {
+        get: async () => ({
+          body: new ReadableStream({ cancel() { cancelled = true; } }),
+          httpEtag: '"v1"',
+          writeHttpMetadata(headers: Headers) { headers.set("content-type", "text/plain"); },
+        }),
+      },
+    };
+  }
+
   test("keeps private files hidden without the owner session", async () => {
-    const env = { DB: database({ user_id: "owner", private: 1 }), EVENTS_SECRET: "secret", FILES: { get: async () => { throw new Error("must not load private object"); } } };
+    const object = refusedObject();
+    const env = { DB: database({ user_id: "owner", visibility: "private" }), EVENTS_SECRET: "secret", FILES: object.FILES };
     const response = await worker.fetch(new Request("https://files.myslop.app/private.txt") as never, env as never, context()) as unknown as Response;
     expect(response.status).toBe(404);
+    expect(object.cancelled()).toBe(true);
+  });
+
+  test("sends anonymous browsers to sign in for protected files and 401s other clients", async () => {
+    const env = { DB: database({ user_id: "owner", visibility: "protected" }), EVENTS_SECRET: "secret", FILES: refusedObject().FILES };
+    const browser = await worker.fetch(new Request("https://files.myslop.app/abcdef0123/report.html", {
+      headers: { accept: "text/html,application/xhtml+xml" },
+    }) as never, env as never, context()) as unknown as Response;
+    expect(browser.status).toBe(302);
+    expect(browser.headers.get("location")).toBe(
+      `https://myslop.cloud/?returnTo=${encodeURIComponent("https://files.myslop.app/abcdef0123/report.html")}`,
+    );
+    const image = await worker.fetch(new Request("https://files.myslop.app/abcdef0123/shot.png", {
+      headers: { accept: "image/*" },
+    }) as never, env as never, context()) as unknown as Response;
+    expect(image.status).toBe(401);
   });
 });
 
@@ -188,7 +220,9 @@ describe("platform identity", () => {
     const { db, env } = identityDatabase();
     db.exec(`CREATE TABLE files (
       key TEXT PRIMARY KEY, user_id TEXT NOT NULL, filename TEXT, size INTEGER,
-      content_type TEXT, private INTEGER DEFAULT 0, created_at INTEGER
+      content_type TEXT, private INTEGER DEFAULT 0,
+      visibility TEXT CHECK (visibility IN ('private', 'protected', 'public')),
+      created_at INTEGER
     )`);
     db.query("INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?)").run(
       "shoo-user",
@@ -226,19 +260,37 @@ describe("platform identity", () => {
     }) as never, env as never, context()) as unknown as Response;
     expect(response.status).toBe(201);
     expect(await response.text()).toMatch(/^https:\/\/files\.myslop\.app\/[a-f0-9]{10}\/report\.txt\n$/);
-    expect(db.query("SELECT user_id, filename FROM files").get()).toEqual({
+    expect(db.query("SELECT user_id, filename, visibility, private FROM files").get()).toEqual({
       user_id: "shoo-user",
       filename: "report.txt",
+      visibility: "protected",
+      private: 1,
     });
+  });
+
+  test("uploads with a requested visibility and rejects unknown ones", async () => {
+    const { db, env } = identityEnv();
+    const upload = (query: string) => worker.fetch(new Request(`https://files.myslop.app/report.txt${query}`, {
+      method: "PUT",
+      headers: IDENTITY_HEADERS,
+      body: "hello",
+    }) as never, env as never, context()) as unknown as Promise<Response>;
+    expect((await upload("?visibility=public")).status).toBe(201);
+    expect((await upload("?private=1")).status).toBe(201);
+    expect((await upload("?visibility=secret")).status).toBe(400);
+    expect(db.query("SELECT visibility, private FROM files ORDER BY visibility").all()).toEqual([
+      { visibility: "private", private: 1 },
+      { visibility: "public", private: 0 },
+    ]);
   });
 
   function replaceEnv() {
     const { db, env } = identityEnv();
     db.query("INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?)").run("someone-else", "bob@example.com", "Bob", 1);
-    db.query("INSERT INTO files (key, user_id, filename, size, content_type, private, created_at) VALUES (?,?,?,?,?,?,?)")
-      .run("0123456789/report.html", "shoo-user", "report.html", 1, "text/html; charset=utf-8", 0, 1);
-    db.query("INSERT INTO files (key, user_id, filename, size, content_type, private, created_at) VALUES (?,?,?,?,?,?,?)")
-      .run("abcdefabcd/notes.txt", "someone-else", "notes.txt", 1, "text/plain; charset=utf-8", 0, 1);
+    db.query("INSERT INTO files (key, user_id, filename, size, content_type, private, visibility, created_at) VALUES (?,?,?,?,?,?,?,?)")
+      .run("0123456789/report.html", "shoo-user", "report.html", 1, "text/html; charset=utf-8", 0, "public", 1);
+    db.query("INSERT INTO files (key, user_id, filename, size, content_type, private, visibility, created_at) VALUES (?,?,?,?,?,?,?,?)")
+      .run("abcdefabcd/notes.txt", "someone-else", "notes.txt", 1, "text/plain; charset=utf-8", 1, "protected", 1);
     const puts: string[] = [];
     const files = {
       put: async (key: string, _body: unknown, opts: { httpMetadata?: { contentType?: string } }) => {
@@ -259,24 +311,131 @@ describe("platform identity", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("https://files.myslop.app/0123456789/report.html\n");
     expect(puts).toEqual(["0123456789/report.html"]);
-    expect(db.query("SELECT key, size, private FROM files WHERE user_id = ? ORDER BY key").all("shoo-user")).toEqual([
-      { key: "0123456789/report.html", size: 9, private: 0 },
+    expect(db.query("SELECT key, size, visibility FROM files WHERE user_id = ? ORDER BY key").all("shoo-user")).toEqual([
+      { key: "0123456789/report.html", size: 9, visibility: "public" },
     ]);
   });
 
-  test("makes a file private before its new bytes are written", async () => {
+  function visibilityAtWrite(query: string, initial: string) {
     const { db, env } = replaceEnv();
-    let privateAtWrite: unknown = null;
+    db.query("UPDATE files SET visibility = ?, private = ? WHERE key = ?")
+      .run(initial, initial === "public" ? 0 : 1, "0123456789/report.html");
+    let atWrite: unknown = null;
     const files = {
       ...env.FILES,
       put: async (key: string, body: unknown, opts: { httpMetadata?: { contentType?: string } }) => {
-        privateAtWrite = db.query("SELECT private FROM files WHERE key = ?").get(key);
+        atWrite = db.query("SELECT visibility, private FROM files WHERE key = ?").get(key);
         return env.FILES.put(key, body, opts);
       },
     };
-    await worker.fetch(put("0123456789/report.html?private=1") as never, { ...env, FILES: files } as never, context());
-    expect(privateAtWrite).toEqual({ private: 1 });
-    expect(db.query("SELECT private FROM files WHERE key = ?").get("0123456789/report.html")).toEqual({ private: 1 });
+    return worker.fetch(put(`0123456789/report.html${query}`) as never, { ...env, FILES: files } as never, context())
+      .then(() => ({
+        atWrite,
+        after: db.query("SELECT visibility, private FROM files WHERE key = ?").get("0123456789/report.html"),
+      }));
+  }
+
+  test("tightens visibility before the new bytes are written and loosens it after", async () => {
+    expect(await visibilityAtWrite("?visibility=protected", "public")).toEqual({
+      atWrite: { visibility: "protected", private: 1 },
+      after: { visibility: "protected", private: 1 },
+    });
+    expect(await visibilityAtWrite("?private=1", "protected")).toEqual({
+      atWrite: { visibility: "private", private: 1 },
+      after: { visibility: "private", private: 1 },
+    });
+    expect(await visibilityAtWrite("?visibility=protected", "private")).toEqual({
+      atWrite: { visibility: "private", private: 1 },
+      after: { visibility: "protected", private: 1 },
+    });
+    expect(await visibilityAtWrite("?visibility=public", "protected")).toEqual({
+      atWrite: { visibility: "protected", private: 1 },
+      after: { visibility: "public", private: 0 },
+    });
+    expect(await visibilityAtWrite("", "private")).toEqual({
+      atWrite: { visibility: "private", private: 1 },
+      after: { visibility: "private", private: 1 },
+    });
+  });
+
+  function getFile(env: unknown, path: string, headers: Record<string, string> = {}) {
+    const files = {
+      get: async () => ({
+        body: new ReadableStream({ start(controller) { controller.enqueue(encoder.encode("hello")); controller.close(); } }),
+        httpEtag: '"v1"',
+        writeHttpMetadata(h: Headers) { h.set("content-type", "text/plain"); },
+      }),
+    };
+    return worker.fetch(new Request(`https://files.myslop.app/${path}`, { headers }) as never, { ...(env as object), FILES: files } as never, context()) as unknown as Promise<Response>;
+  }
+
+  test("serves protected files to any signed-in user and private files only to their owner", async () => {
+    const { db, env } = replaceEnv();
+    db.query("INSERT INTO files (key, user_id, filename, visibility, private) VALUES (?,?,?,?,?)")
+      .run("fedcba9876/secret.txt", "someone-else", "secret.txt", "private", 1);
+    const bob = { "x-myslop-user-id": "plat-2", "x-myslop-user-email": "bob@example.com" };
+
+    const protectedFile = await getFile(env, "abcdefabcd/notes.txt", IDENTITY_HEADERS);
+    expect(protectedFile.status).toBe(200);
+    expect(protectedFile.headers.get("cache-control")).toBe("private, no-cache");
+    expect((await getFile(env, "abcdefabcd/notes.txt")).status).toBe(401);
+
+    expect((await getFile(env, "fedcba9876/secret.txt", IDENTITY_HEADERS)).status).toBe(404);
+    const owner = await getFile(env, "fedcba9876/secret.txt", bob);
+    expect(owner.status).toBe(200);
+    expect(owner.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  test("changes visibility from the dashboard, accepting the legacy private flag", async () => {
+    const { db, env } = replaceEnv();
+    db.query("INSERT INTO sessions VALUES (?,?,?,?)").run("b".repeat(64), "shoo-user", 1, Date.now() + 60_000);
+    const patch = (body: unknown) => worker.fetch(new Request("https://files.myslop.app/api/files/0123456789/report.html", {
+      method: "PATCH",
+      headers: { cookie: `sid=${"b".repeat(64)}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }) as never, env as never, context()) as unknown as Promise<Response>;
+    const row = () => db.query("SELECT visibility, private FROM files WHERE key = ?").get("0123456789/report.html");
+
+    expect(await (await patch({ visibility: "protected" })).json() as unknown).toEqual({ ok: true, visibility: "protected" });
+    expect(row()).toEqual({ visibility: "protected", private: 1 });
+    await patch({ private: false });
+    expect(row()).toEqual({ visibility: "public", private: 0 });
+    expect((await patch({ visibility: "everyone" })).status).toBe(400);
+    expect((await patch({ visibility: "everyone", private: true })).status).toBe(400);
+    expect(row()).toEqual({ visibility: "public", private: 0 });
+  });
+
+  test("checks visibility after reading the object, so a concurrent tighten wins", async () => {
+    const { db, env } = replaceEnv();
+    const files = {
+      get: async () => {
+        // The owner's replacement tightens the file between our object read
+        // and our metadata read.
+        db.query("UPDATE files SET visibility = 'private', private = 1 WHERE key = ?").run("0123456789/report.html");
+        return {
+          body: new ReadableStream(),
+          httpEtag: '"v2"',
+          writeHttpMetadata(h: Headers) { h.set("content-type", "text/html"); },
+        };
+      },
+    };
+    const response = await worker.fetch(new Request("https://files.myslop.app/0123456789/report.html") as never, { ...env, FILES: files } as never, context()) as unknown as Response;
+    expect(response.status).toBe(404);
+  });
+
+  test("lets the owner's dashboard session open a private file alongside another platform identity", async () => {
+    const { db, env } = replaceEnv();
+    db.query("UPDATE files SET visibility = 'private', private = 1 WHERE key = ?").run("abcdefabcd/notes.txt");
+    db.query("INSERT INTO sessions VALUES (?,?,?,?)").run("c".repeat(64), "someone-else", 1, Date.now() + 60_000);
+    const response = await getFile(env, "abcdefabcd/notes.txt", { ...IDENTITY_HEADERS, cookie: `sid=${"c".repeat(64)}` });
+    expect(response.status).toBe(200);
+  });
+
+  test("lets a dashboard session open protected files", async () => {
+    const { db, env } = replaceEnv();
+    db.query("INSERT INTO sessions VALUES (?,?,?,?)").run("a".repeat(64), "someone-else", 1, Date.now() + 60_000);
+    const response = await getFile(env, "abcdefabcd/notes.txt", { cookie: `sid=${"a".repeat(64)}` });
+    expect(response.status).toBe(200);
   });
 
   test("does not recreate a file deleted while its replacement uploads", async () => {
@@ -338,5 +497,38 @@ describe("platform identity", () => {
       body: "hello",
     }) as never, env as never, context()) as unknown as Response;
     expect(response.status).toBe(401);
+  });
+});
+
+describe("visibility migration", () => {
+  test("backfills existing files and gives legacy writes their old meaning", async () => {
+    const root = new URL("..", import.meta.url).pathname;
+    const before = await Bun.$`git show HEAD:apps/files/schema.sql`.cwd(root).text();
+    const db = new Database(":memory:");
+    db.exec(before);
+    db.exec("INSERT INTO users (id, created_at) VALUES ('u', 1)");
+    const insertLegacy = db.query("INSERT INTO files (key, user_id, filename, private, created_at) VALUES (?, 'u', 'f', ?, 1)");
+    insertLegacy.run("old/private", 1);
+    insertLegacy.run("old/public", 0);
+    db.exec(await Bun.file(`${root}/migrations/002_file_visibility.sql`).text());
+    const visibility = (key: string) => (db.query("SELECT visibility FROM files WHERE key = ?").get(key) as { visibility: string }).visibility;
+    expect([visibility("old/private"), visibility("old/public")]).toEqual(["private", "public"]);
+
+    // A build that only knows `private`, e.g. after a rollback.
+    insertLegacy.run("legacy/private", 1);
+    insertLegacy.run("legacy/public", 0);
+    expect([visibility("legacy/private"), visibility("legacy/public")]).toEqual(["private", "public"]);
+    db.exec("INSERT INTO files (key, user_id, filename, private, visibility, created_at) VALUES ('new/protected', 'u', 'f', 1, 'protected', 1)");
+    db.exec("UPDATE files SET private = 0 WHERE key = 'new/protected'");
+    expect(visibility("new/protected")).toBe("public");
+    db.exec("UPDATE files SET private = 1 WHERE key = 'old/public'");
+    expect(visibility("old/public")).toBe("private");
+
+    // Writes from this build set both columns and are left alone.
+    db.exec("UPDATE files SET visibility = 'protected', private = 1 WHERE key = 'old/public'");
+    db.exec("UPDATE files SET visibility = 'protected', private = 1 WHERE key = 'old/public'");
+    expect(visibility("old/public")).toBe("protected");
+    db.exec("UPDATE files SET visibility = 'public', private = 0 WHERE key = 'old/public'");
+    expect(visibility("old/public")).toBe("public");
   });
 });

@@ -3,6 +3,7 @@ import skillMd from "./skill.md";
 import skillHtmlTemplate from "./skill.html";
 import setupShB64 from "./setup-sh.generated";
 import { platformIdentity, resolvePlatformUser } from "../../../platform/src/app-identity";
+import { PLATFORM_ORIGIN } from "../../../platform/src/domains";
 
 // Decoded lazily-once; stored base64 because raw shell text in the bundle
 // trips the Cloudflare API WAF on deploy.
@@ -336,6 +337,73 @@ function etagMatches(header: string | null, etag: string): boolean {
   return header.split(",").some((tag) => tag.trim() === "*" || opaque(tag) === opaque(etag));
 }
 
+// --- Visibility ---
+
+// private: the owner only. protected: anyone signed in to myslop. public:
+// anyone with the link. Untracked objects (app uploads) are public.
+type Visibility = "private" | "protected" | "public";
+
+const DEFAULT_VISIBILITY: Visibility = "protected";
+const RESTRICTIVENESS: Record<Visibility, number> = { public: 0, protected: 1, private: 2 };
+
+function isVisibility(value: unknown): value is Visibility {
+  return typeof value === "string" && Object.hasOwn(RESTRICTIVENESS, value);
+}
+
+// ?visibility= wins; the legacy ?private=1 / ?private=0 still mean private /
+// public. Returns null when neither is given, undefined when invalid.
+function requestedVisibility(params: URLSearchParams): Visibility | null | undefined {
+  const visibility = params.get("visibility");
+  if (visibility !== null) return isVisibility(visibility) ? visibility : undefined;
+  const legacy = params.get("private");
+  if (legacy === "1") return "private";
+  if (legacy === "0") return "public";
+  return null;
+}
+
+// The local account behind dispatcher-injected identity, without creating
+// one: an identity with no local account cannot own a file.
+async function platformUserId(req: Request, env: Env): Promise<string | null> {
+  const identity = platformIdentity(req);
+  if (!identity) return null;
+  if (identity.email) {
+    const row = await env.DB.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE LIMIT 1")
+      .bind(identity.email)
+      .first<{ id: string }>();
+    if (row) return row.id;
+  }
+  return identity.id;
+}
+
+// Private files are only served to their owner; protected files to anyone
+// signed in, through the platform (session or msa_ token) or this app's
+// dashboard session. Returns the refusal, or null when the viewer may read.
+async function deniedAccess(
+  req: Request,
+  env: Env,
+  url: URL,
+  visibility: Visibility,
+  ownerId: string | undefined,
+): Promise<Response | null> {
+  if (visibility === "public") return null;
+  if (visibility === "private") {
+    if ((await platformUserId(req, env)) === ownerId) return null;
+    if ((await getSessionUser(req, env))?.id === ownerId) return null;
+    return new Response("not found\n", { status: 404 });
+  }
+  if (platformIdentity(req) || (await getSessionUser(req, env))) return null;
+  // Browsers sign in at the platform and come back with a session for this
+  // host; everything else gets a plain 401.
+  const browser = !req.headers.has("Authorization") && (req.headers.get("Accept") ?? "").includes("text/html");
+  if (browser) {
+    return Response.redirect(`${PLATFORM_ORIGIN}/?returnTo=${encodeURIComponent(url.toString())}`, 302);
+  }
+  return new Response("sign in to myslop to view this file\n", {
+    status: 401,
+    headers: { "cache-control": "no-store" },
+  });
+}
+
 function randomId(bytes: number): string {
   return hex(crypto.getRandomValues(new Uint8Array(bytes)));
 }
@@ -415,14 +483,13 @@ async function handleApi(
   // GET /api/files
   if (path === "/api/files" && req.method === "GET") {
     const { results } = await env.DB.prepare(
-      `SELECT key, filename, size, content_type, private, created_at
+      `SELECT key, filename, size, content_type, visibility, created_at
        FROM files WHERE user_id = ? ORDER BY created_at DESC LIMIT 500`,
     )
       .bind(user.id)
       .all();
     const files = (results as Record<string, unknown>[]).map((f) => ({
       ...f,
-      private: Boolean(f.private),
       url: `${url.origin}/${f.key}`,
     }));
     return json({ files });
@@ -442,17 +509,24 @@ async function handleApi(
       return json({ ok: true });
     }
     if (req.method === "PATCH") {
-      let body: { private?: boolean };
+      let body: { visibility?: unknown; private?: unknown };
       try {
-        body = (await req.json()) as { private?: boolean };
+        body = (await req.json()) as { visibility?: unknown; private?: unknown };
       } catch {
         return json({ error: "invalid body" }, 400);
       }
-      if (typeof body.private !== "boolean") return json({ error: "expected {private: boolean}" }, 400);
-      await env.DB.prepare("UPDATE files SET private = ? WHERE key = ?")
-        .bind(body.private ? 1 : 0, key)
+      const visibility = isVisibility(body.visibility)
+        ? body.visibility
+        : typeof body.private === "boolean" && body.visibility === undefined
+          ? (body.private ? "private" : "public")
+          : null;
+      if (!visibility) {
+        return json({ error: "expected {visibility: 'private' | 'protected' | 'public'}" }, 400);
+      }
+      await env.DB.prepare("UPDATE files SET visibility = ?, private = ? WHERE key = ?")
+        .bind(visibility, visibility === "public" ? 0 : 1, key)
         .run();
-      return json({ ok: true, private: body.private });
+      return json({ ok: true, visibility });
     }
     return json({ error: "method not allowed" }, 405);
   }
@@ -596,33 +670,40 @@ export default {
       const filename = key.split("/").pop() ?? "";
       if (!filename) return new Response("missing filename\n", { status: 400 });
 
+      const visibility = requestedVisibility(url.searchParams);
+      if (visibility === undefined) {
+        return new Response("visibility must be private, protected or public\n", { status: 400 });
+      }
+
       // Replace in place: PUT to an existing upload's own URL overwrites it,
       // so links already shared show the new version. Owner only; a key that
       // is unknown or someone else's is a 404, never a new file.
       if (UPLOAD_KEY.test(key)) {
-        const existing = await env.DB.prepare("SELECT user_id FROM files WHERE key = ?")
+        const existing = await env.DB.prepare("SELECT user_id, visibility FROM files WHERE key = ?")
           .bind(key)
-          .first<{ user_id: string }>();
+          .first<{ user_id: string; visibility: Visibility }>();
         if (!existing || existing.user_id !== owner.userId) {
           return new Response("not found\n", { status: 404 });
         }
-        // Making a file private takes effect before the new bytes land, so
-        // they are never served under the old public flag. Making it public
+        // Tightening visibility takes effect before the new bytes land, so
+        // they are never served under the old, looser setting. Loosening
         // waits until after.
-        const privacy = url.searchParams.get("private");
-        if (privacy === "1") {
-          await env.DB.prepare("UPDATE files SET private = 1 WHERE key = ?").bind(key).run();
+        if (visibility && RESTRICTIVENESS[visibility] > RESTRICTIVENESS[existing.visibility]) {
+          await env.DB.prepare("UPDATE files SET visibility = ?, private = 1 WHERE key = ?")
+            .bind(visibility, key)
+            .run();
         }
         const replaced = await env.FILES.put(key, req.body, {
           httpMetadata: { contentType: uploadContentType(req, filename) },
         });
         const updated = await env.DB.prepare(
-          `UPDATE files SET size = ?, content_type = ?, private = COALESCE(?, private) WHERE key = ?`,
+          `UPDATE files SET size = ?1, content_type = ?2, visibility = COALESCE(?3, visibility),
+             private = COALESCE(?3, visibility) <> 'public' WHERE key = ?4`,
         )
           .bind(
             replaced?.size ?? null,
             replaced?.httpMetadata?.contentType ?? guessType(filename),
-            privacy === "0" ? 0 : null,
+            visibility,
             key,
           )
           .run();
@@ -644,10 +725,10 @@ export default {
       });
 
       if (owner) {
-        const isPrivate = url.searchParams.get("private") === "1";
+        const fileVisibility = visibility ?? DEFAULT_VISIBILITY;
         await env.DB.prepare(
-          `INSERT INTO files (key, user_id, filename, size, content_type, private, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO files (key, user_id, filename, size, content_type, visibility, private, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
           .bind(
             objectKey,
@@ -655,7 +736,8 @@ export default {
             filename,
             obj?.size ?? null,
             obj?.httpMetadata?.contentType ?? guessType(filename),
-            isPrivate ? 1 : 0,
+            fileVisibility,
+            fileVisibility === "public" ? 0 : 1,
             Date.now(),
           )
           .run();
@@ -693,27 +775,31 @@ export default {
     if (req.method === "GET" || req.method === "HEAD") {
       if (!key) return Response.redirect(`${url.origin}/dashboard`, 302);
 
-      // Private files are only served to their owner's dashboard session.
-      const meta = await env.DB.prepare("SELECT user_id, private FROM files WHERE key = ?")
-        .bind(key)
-        .first<{ user_id: string; private: number }>();
-      const isPrivate = Boolean(meta?.private);
-      if (isPrivate) {
-        const user = await getSessionUser(req, env);
-        if (!user || user.id !== meta!.user_id) {
-          return new Response("not found\n", { status: 404 });
-        }
-      }
-
+      // The object is read before its metadata. A replacement tightens
+      // visibility before writing new bytes, so the bytes read here are never
+      // newer than the visibility checked against them.
       const obj = await env.FILES.get(key);
       if (!obj) return new Response("not found\n", { status: 404 });
+      const meta = await env.DB.prepare("SELECT user_id, visibility FROM files WHERE key = ?")
+        .bind(key)
+        .first<{ user_id: string; visibility: Visibility }>();
+      const visibility = meta?.visibility ?? "public";
+      const denied = await deniedAccess(req, env, url, visibility, meta?.user_id);
+      if (denied) {
+        await obj.body?.cancel();
+        return denied;
+      }
+      const isPrivate = visibility === "private";
 
       const headers = new Headers();
       obj.writeHttpMetadata(headers);
-      // Owners can replace a file in place, so public files revalidate by
-      // ETag rather than caching as immutable; private files must never land
-      // in a shared cache.
-      headers.set("cache-control", isPrivate ? "private, no-store" : "public, no-cache");
+      // Owners can replace a file in place, so files revalidate by ETag
+      // rather than caching as immutable. Only public files may land in a
+      // shared cache, and private ones are not cached at all.
+      headers.set(
+        "cache-control",
+        { private: "private, no-store", protected: "private, no-cache", public: "public, no-cache" }[visibility],
+      );
       if (!headers.get("content-type")) {
         headers.set("content-type", guessType(key));
       }
