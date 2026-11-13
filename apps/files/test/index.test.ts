@@ -191,12 +191,23 @@ describe("Files app compatibility", () => {
     };
   }
 
-  test("keeps private files hidden without the owner session", async () => {
+  test("keeps private files from anonymous clients without the owner session", async () => {
     const object = refusedObject();
     const env = { DB: database({ user_id: "owner", visibility: "private" }), EVENTS_SECRET: "secret", FILES: object.FILES };
     const response = await worker.fetch(new Request("https://files.myslop.app/private.txt") as never, env as never, context()) as unknown as Response;
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(401);
     expect(object.cancelled()).toBe(true);
+  });
+
+  test("sends anonymous browsers to sign in for private files, so the owner can open a shared link", async () => {
+    const env = { DB: database({ user_id: "owner", visibility: "private" }), EVENTS_SECRET: "secret", FILES: refusedObject().FILES };
+    const browser = await worker.fetch(new Request("https://files.myslop.app/abcdef0123/report.html", {
+      headers: { accept: "text/html,application/xhtml+xml" },
+    }) as never, env as never, context()) as unknown as Response;
+    expect(browser.status).toBe(302);
+    expect(browser.headers.get("location")).toBe(
+      `https://myslop.cloud/?returnTo=${encodeURIComponent("https://files.myslop.app/abcdef0123/report.html")}`,
+    );
   });
 
   test("sends anonymous browsers to sign in for protected files and 401s other clients", async () => {
@@ -380,7 +391,7 @@ describe("platform identity", () => {
     expect(protectedFile.headers.get("cache-control")).toBe("private, no-cache");
     expect((await getFile(env, "abcdefabcd/notes.txt")).status).toBe(401);
 
-    expect((await getFile(env, "fedcba9876/secret.txt", IDENTITY_HEADERS)).status).toBe(404);
+    expect((await getFile(env, "fedcba9876/secret.txt", IDENTITY_HEADERS)).status).toBe(403);
     const owner = await getFile(env, "fedcba9876/secret.txt", bob);
     expect(owner.status).toBe(200);
     expect(owner.headers.get("cache-control")).toBe("private, no-store");
@@ -420,7 +431,7 @@ describe("platform identity", () => {
       },
     };
     const response = await worker.fetch(new Request("https://files.myslop.app/0123456789/report.html") as never, { ...env, FILES: files } as never, context()) as unknown as Response;
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(401);
   });
 
   test("lets the owner's dashboard session open a private file alongside another platform identity", async () => {
@@ -429,6 +440,24 @@ describe("platform identity", () => {
     db.query("INSERT INTO sessions VALUES (?,?,?,?)").run("c".repeat(64), "someone-else", 1, Date.now() + 60_000);
     const response = await getFile(env, "abcdefabcd/notes.txt", { ...IDENTITY_HEADERS, cookie: `sid=${"c".repeat(64)}` });
     expect(response.status).toBe(200);
+  });
+
+  test("tells a signed-in browser that isn't the owner the file is private", async () => {
+    const { db, env } = replaceEnv();
+    db.query("INSERT INTO files (key, user_id, filename, visibility, private) VALUES (?,?,?,?,?)")
+      .run("fedcba9876/<b>secret</b>.txt", "someone-else", "<b>secret</b>.txt", "private", 1);
+    const response = await getFile(env, "fedcba9876/%3Cb%3Esecret%3C%2Fb%3E.txt", {
+      ...IDENTITY_HEADERS,
+      accept: "text/html",
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const page = await response.text();
+    expect(page).toContain("This file is private");
+    expect(page).toContain("&lt;b&gt;secret&lt;/b&gt;.txt");
+    expect(page).not.toContain("<b>secret</b>");
+    expect(page).not.toContain("hello");
   });
 
   test("lets a dashboard session open protected files", async () => {
