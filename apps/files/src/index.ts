@@ -375,6 +375,46 @@ async function platformUserId(req: Request, env: Env): Promise<string | null> {
   return identity.id;
 }
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
+
+function wantsHtml(req: Request): boolean {
+  return !req.headers.has("Authorization") && (req.headers.get("Accept") ?? "").includes("text/html");
+}
+
+// A signed-in viewer who is not the owner of a private file. Browsers get a
+// page saying so, so a shared link doesn't look broken.
+function privateFileRefusal(req: Request, url: URL, viewerEmail: string | null): Response {
+  const headers = { "cache-control": "no-store" };
+  if (!wantsHtml(req)) {
+    return new Response("this file is private to the person who uploaded it\n", { status: 403, headers });
+  }
+  const filename = escapeHtml(decodeURIComponent(url.pathname.split("/").pop() ?? "this file"));
+  const viewer = viewerEmail ? `<p class="muted">You're signed in as ${escapeHtml(viewerEmail)}.</p>` : "";
+  const page = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Private file · myslop files</title>
+<style>
+  body{font:16px/1.5 system-ui,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#f6f5f2;color:#1d1d1f}
+  main{max-width:30rem;padding:2rem}
+  h1{font-size:1.4rem;margin:0 0 .75rem}
+  code{background:#ebe9e4;padding:.1rem .35rem;border-radius:4px;word-break:break-all}
+  .muted{color:#6b6b70;font-size:.9rem}
+</style></head>
+<body><main>
+  <h1>This file is private</h1>
+  <p>Only the person who uploaded <code>${filename}</code> can open it.</p>
+  <p>Ask them to share it with everyone signed in to myslop: they can change it to “Signed in” in the
+  <a href="/dashboard">Files dashboard</a>.</p>
+  ${viewer}
+</main></body></html>`;
+  return new Response(page, {
+    status: 403,
+    headers: { ...headers, "content-type": "text/html; charset=utf-8" },
+  });
+}
+
 // Private files are only served to their owner; protected files to anyone
 // signed in, through the platform (session or msa_ token) or this app's
 // dashboard session. Returns the refusal, or null when the viewer may read.
@@ -386,16 +426,21 @@ async function deniedAccess(
   ownerId: string | undefined,
 ): Promise<Response | null> {
   if (visibility === "public") return null;
+  const identity = platformIdentity(req);
+  const sessionUser = await getSessionUser(req, env);
   if (visibility === "private") {
-    if ((await platformUserId(req, env)) === ownerId) return null;
-    if ((await getSessionUser(req, env))?.id === ownerId) return null;
-    return new Response("not found\n", { status: 404 });
+    if (identity && (await platformUserId(req, env)) === ownerId) return null;
+    if (sessionUser?.id === ownerId) return null;
+  } else if (identity || sessionUser) {
+    return null;
   }
-  if (platformIdentity(req) || (await getSessionUser(req, env))) return null;
-  // Browsers sign in at the platform and come back with a session for this
-  // host; everything else gets a plain 401.
-  const browser = !req.headers.has("Authorization") && (req.headers.get("Accept") ?? "").includes("text/html");
-  if (browser) {
+  // Signed in but not the owner of a private file.
+  if (identity || sessionUser) {
+    return privateFileRefusal(req, url, identity?.email ?? sessionUser?.email ?? null);
+  }
+  // Nobody signed in: browsers sign in at the platform and come back with a
+  // session for this host; everything else gets a plain 401.
+  if (wantsHtml(req)) {
     return Response.redirect(`${PLATFORM_ORIGIN}/?returnTo=${encodeURIComponent(url.toString())}`, 302);
   }
   return new Response("sign in to myslop to view this file\n", {
